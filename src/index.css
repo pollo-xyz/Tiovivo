@@ -1,80 +1,210 @@
+/* ================================================================
+   TIOVIVO DESIGN TOKENS — "Signal" (Swiss editorial × bklit)
+
+   Two-layer system: each theme block sets the base palette (ink,
+   paper, surfaces, accents); every border, text tone, and wash
+   derives from those via color-mix, so components never reference
+   raw colors — always tokens or color-mix over tokens.
+
+   Design creed (Müller-Brockmann / Vignelli / bklit):
+   neutral achromatic ground, ONE signal accent (blue),
+   hairline rules over cards, flat surfaces over gradients,
+   whitespace and weight carry hierarchy — never decoration.
+
+   Themes: Onyx (neutral near-black, default — no [data-theme])
+   and Cream (gallery paper — [data-theme='cream'] on <html>).
+   Neither uses pure white or pure black: ink tops out at
+   #f2f1ee / #191918.
+   ================================================================ */
+
 :root {
-  /* ── Backgrounds (true black → warm elevated surfaces) ── */
-  --bg:         #000000;
-  --bg-soft:    #05050a;
-  --surface:    #0a0a10;
-  --surface-2:  #101017;
-  --surface-3:  #181822;
-  --surface-hi: #24242f;
+  color-scheme: dark;
 
-  /* ── Borders ── */
-  --border:        rgba(255, 255, 255, 0.055);
-  --border-strong: rgba(255, 255, 255, 0.105);
-  --border-bright: rgba(255, 255, 255, 0.18);
+  /* ── Base palette — neutral ink; the faintest warmth, no brown cast ── */
+  --ink:   #f2f1ee;              /* near-white foreground; every wash derives from it */
+  --paper: #0f0f0e;              /* neutral near-black */
+  --bg:      var(--paper);
+  --bg-soft: #131312;
+  --surface:    #141413;
+  --surface-2:  #181817;
+  --surface-3:  #1d1d1b;
+  --surface-hi: #282826;
+  --glass-tint: #151514;         /* translucent panel base, sits over backdrop blur */
+  --canvas-bg:  #1a1a19;         /* auto pasteboard — keep in sync with CANVAS_BG in lib/theme.ts */
 
-  /* ── Text ── */
-  --text-dim:    rgba(255, 255, 255, 0.34);
-  --text:        rgba(255, 255, 255, 0.62);
-  --text-bright: rgba(255, 255, 255, 0.96);
+  /* ── Interactive accent: signal blue — THE one accent (selection, active, focus) ── */
+  --hot:      #3d7bfd;
+  --hot-hi:   #6b9dff;
+  --hot-pale: #b8cfff;           /* readable blue text over hot tints */
+  --hot-text: rgba(214, 228, 255, 0.96);
+  --hot-veil: color-mix(in srgb, var(--hot) 15%, transparent); /* active-item backdrop */
+  --on-hot:   #f4f8ff;           /* light text placed on solid --hot */
 
-  /* ── Primary accent: white ── */
-  --accent:        #ffffff;
-  --accent-hi:     #ffffff;
-  --accent-deep:   #cccccc;
-  --accent-dim:    rgba(255, 255, 255, 0.14);
-  --accent-glow:   rgba(255, 255, 255, 0.55);
-  --accent-strong: rgba(255, 255, 255, 0.85);
+  /* ── Primary CTA: ink solid — near-white on Onyx, flips to near-black on Cream ── */
+  --accent:      #ececea;
+  --accent-hi:   #f6f6f4;
+  --accent-deep: #c9c9c5;
+  --on-accent:   #161614;        /* text placed on solid --accent */
 
-  /* ── Secondary accent: electric cyan ── */
-  --warm:        #06b6d4;
-  --warm-hi:     #67e8f9;
-  --warm-dim:    rgba(6, 182, 212, 0.14);
-  --warm-glow:   rgba(6, 182, 212, 0.50);
+  /* ── Semantic tones (functional only — never decorative) ── */
+  --warm:    #9a9a95;            /* info: quiet neutral */
+  --warm-hi: #c4c4bf;
+  --cool:    #4a9d5f;            /* success family */
+  --cool-hi: #7bc98e;
+  --success: #57b06e;
+  --danger:     #f0566a;         /* rose — reads apart from vermilion */
+  --danger-hi:  #f5808f;
 
-  /* ── Tertiary pop: neon lime ── */
-  --cool:        #a3e635;
-  --cool-hi:     #d9f99d;
-  --cool-dim:    rgba(163, 230, 53, 0.14);
-  --cool-glow:   rgba(163, 230, 53, 0.45);
+  /* ── Derived washes (identical formula on every theme) ── */
+  --border:        color-mix(in srgb, var(--ink) 5.5%, transparent);
+  --border-strong: color-mix(in srgb, var(--ink) 10.5%, transparent);
+  --border-bright: color-mix(in srgb, var(--ink) 18%, transparent);
+  /* 48%, not 34%: field labels and section headings use this at ~10px —
+     34% measured 2.9:1 against the panels, under WCAG AA. 48% ≈ 4.5:1. */
+  --text-dim:    color-mix(in srgb, var(--ink) 48%, transparent);
+  --text:        color-mix(in srgb, var(--ink) 62%, transparent);
+  --text-bright: color-mix(in srgb, var(--ink) 96%, transparent);
+  --accent-dim:    color-mix(in srgb, var(--accent) 14%, transparent);
+  --accent-glow:   color-mix(in srgb, var(--accent) 55%, transparent);
+  --accent-strong: color-mix(in srgb, var(--accent) 85%, transparent);
+  --warm-dim:   color-mix(in srgb, var(--warm) 14%, transparent);
+  --warm-glow:  color-mix(in srgb, var(--warm) 50%, transparent);
+  --cool-dim:   color-mix(in srgb, var(--cool) 14%, transparent);
+  --cool-glow:  color-mix(in srgb, var(--cool) 45%, transparent);
+  --danger-dim: color-mix(in srgb, var(--danger) 14%, transparent);
 
-  /* ── Soft solid ── */
-  --accent-soft: #333333;
+  /* ── Soft solid — raised toggle thumb ── */
+  --accent-soft: #2b2b28;
 
-  /* ── Bold cool-spectrum gradient ── */
-  --grad:        linear-gradient(120deg, #ffffff 0%, #22d3ee 55%, #a3e635 110%);
-  --grad-soft:   linear-gradient(120deg, rgba(139,92,246,0.28) 0%, rgba(34,211,238,0.20) 55%, rgba(163,230,53,0.14) 110%);
+  /* ── Recessed field wells (inputs, swatch backdrops) ── */
+  --well-tint: #070706;
+  --well-scale: 1;      /* Cream scales well darkness down */
 
-  /* ── Success / Danger ── */
-  --success:     #4ade80;
-  --danger:      #fb7185;
-  --danger-hi:   #fda4af;
-  --danger-dim:  rgba(251, 113, 133, 0.14);
+  /* ── Select dropdown arrow (data-URI can't use tokens; two variants) ── */
+  --select-arrow: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='rgba(242,241,238,0.5)' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M6 9l6 6 6-6'/></svg>");
 
-  /* ── Radius ── */
+  /* ── Frosted glass (floating chrome only: menus, pickers, toasts) ── */
+  --blur:    blur(20px) saturate(130%);
+  --blur-sm: blur(12px) saturate(120%);
+  --glass-bg:        color-mix(in srgb, var(--glass-tint) 72%, transparent);
+  --glass-bg-strong: color-mix(in srgb, var(--glass-tint) 88%, transparent);
+  --glass-border:    color-mix(in srgb, var(--ink) 13%, transparent);
+  --glass-highlight: inset 0 1px 0 color-mix(in srgb, var(--ink) 10%, transparent);
+
+  /* ── Radius — UNIFORM 8 (Rolando's pick 5C): one radius for every
+     control, panel, menu and dialog. --r-xs is the nested/micro size
+     (rows inside padded menus, tiny badges); --r-pill survives only for
+     inherently round things (switch tracks, knobs, scrollbars). ── */
   --r-xs: 4px;
-  --r-sm: 6px;
-  --r:    9px;
-  --r-lg: 13px;
-  --r-xl: 18px;
+  --r-sm: 8px;
+  --r:    8px;
+  --r-md: 8px;
+  --r-lg: 8px;
+  --r-xl: 8px;
   --r-pill: 999px;
 
-  /* ── Shadows ── */
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
-  --shadow:    0 4px 16px rgba(0, 0, 0, 0.5), 0 1px 2px rgba(0, 0, 0, 0.4);
-  --shadow-lg: 0 16px 48px rgba(0, 0, 0, 0.6), 0 2px 8px rgba(0, 0, 0, 0.4);
-  --shadow-accent: 0 0 0 1px rgba(255, 255, 255, 0.45), 0 8px 28px rgba(255, 255, 255, 0.45);
-  --shadow-cool:   0 0 0 1px rgba(34, 211, 238, 0.45), 0 8px 28px rgba(34, 211, 238, 0.40);
+  /* ── Shadows — flat by default; elevation only for floating chrome ── */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35);
+  --shadow:    0 2px 10px rgba(0, 0, 0, 0.35), 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-lg: 0 12px 32px rgba(0, 0, 0, 0.5), 0 2px 6px rgba(0, 0, 0, 0.35);
 
-  /* ── Motion ── */
-  --ease:        cubic-bezier(0.22, 0.61, 0.36, 1);
+  /* ── Ambient wash — full toqe strength (pick 7C): a grey-blue glow
+     rising from the bottom + a soft top-right light. Rails are properly
+     translucent so the light reads through the chrome. ── */
+  --ambient:
+    radial-gradient(135% 108% at 50% 128%, rgba(158, 162, 172, 0.3), rgba(96, 99, 108, 0.14) 36%, transparent 64%),
+    radial-gradient(80% 60% at 90% 2%, rgba(128, 132, 142, 0.26), transparent 52%);
+  --rail-tint: color-mix(in srgb, var(--surface) 55%, transparent);
+
+  /* ── Motion — transitions.dev shared scale (as tuned in toqe/Plaza) ── */
+  --ease:        cubic-bezier(0.22, 1, 0.36, 1);   /* smooth-out — THE house ease */
   --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --ease-bounce: cubic-bezier(0.34, 1.36, 0.64, 1);
+  --ease-pop:    cubic-bezier(0.2, 0.9, 0.3, 1.1); /* light overshoot for pop-ins */
+  --dur-micro:   80ms;
   --dur-fast:    120ms;
+  --dur-quick:   150ms;                            /* dropdown/modal close, text swap */
   --dur:         180ms;
+  --dur-open:    250ms;                            /* dropdown/modal open, icon swap */
   --dur-slow:    280ms;
+  --dur-reveal:  400ms;                            /* panel open, content reveal */
+  --press: scale(0.965);         /* tactile button press — 0.96 is the floor */
 
-  /* ── Typography ── */
-  --font: 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
-  --mono: 'JetBrains Mono', ui-monospace, 'SF Mono', monospace;
+  /* ── Typography — Inter for UI, Funnel Display/Sans for the family voice
+     (the same faces Plaza and toqe wear: Display = wordmark + titles,
+     Sans = tracked micro-labels and metadata). ── */
+  --font:    'Inter Variable', 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  --meta:    'Funnel Sans Variable', 'Funnel Sans', var(--font);   /* labels, badges, metadata */
+  --display: 'Funnel Display Variable', 'Funnel Display', var(--font); /* wordmark + titles */
+  --serif:   var(--display);             /* legacy alias — display voice */
+  /* No separate mono face — Inter carries numerics too, with tabular figures
+     applied where digits must align (see input[type=number] + tabular-nums). */
+  --mono: var(--font);
+
+  /* Animate height: auto (the <details> collapsibles) — Chromium 129+. */
+  interpolate-size: allow-keywords;
+}
+
+/* ================================================================
+   CREAM — gallery-paper light theme; only the base palette changes.
+   ================================================================ */
+:root[data-theme='cream'] {
+  color-scheme: light;
+
+  --ink:   #191918;
+  --paper: #f7f7f5;
+  --bg-soft: #f1f1ef;
+  /* Elevation gets whiter on light; the canvas sits below everything */
+  --surface:    #f0f0ee;
+  --surface-2:  #f3f3f1;
+  --surface-3:  #f9f9f7;
+  --surface-hi: #fcfcfb;
+  --glass-tint: #f5f5f3;
+  --canvas-bg:  #e8e8e5;
+
+  /* signal blue, deepened so it reads on the pale paper ground */
+  --hot:      #1a56db;
+  --hot-hi:   #1447b8;
+  --hot-pale: #0f3a9e;
+  --hot-text: rgba(12, 38, 96, 0.96);
+  --hot-veil: color-mix(in srgb, var(--hot) 12%, transparent);
+  --on-hot:   #f5f8fe;
+
+  --accent:      #1d1d1b;
+  --accent-hi:   #111110;
+  --accent-deep: #454542;
+  --on-accent:   #f7f7f5;
+  --accent-soft: #dededa;
+
+  --warm-hi:   #6f6f6a;
+  --cool-hi:   #3d8b52;
+  --danger:    #d92d43;
+  --danger-hi: #b1202f;
+
+  /* Dark-on-light borders and text need a touch more weight */
+  --border:        color-mix(in srgb, var(--ink) 9%, transparent);
+  --border-strong: color-mix(in srgb, var(--ink) 16%, transparent);
+  --border-bright: color-mix(in srgb, var(--ink) 26%, transparent);
+  --text-dim:    color-mix(in srgb, var(--ink) 60%, transparent); /* ≈4.5:1 on paper (44% was 2.8:1) */
+  --text:        color-mix(in srgb, var(--ink) 72%, transparent);
+  --text-bright: color-mix(in srgb, var(--ink) 94%, transparent);
+
+  --glass-border:    color-mix(in srgb, var(--ink) 16%, transparent);
+  --glass-highlight: inset 0 1px 0 rgba(252, 252, 251, 0.7);
+
+  --well-tint: #232321;
+  --well-scale: 0.22;
+
+  --select-arrow: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='rgba(25,25,24,0.55)' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M6 9l6 6 6-6'/></svg>");
+
+  --shadow-sm: 0 1px 2px rgba(28, 28, 26, 0.08);
+  --shadow:    0 2px 10px rgba(28, 28, 26, 0.10), 0 1px 2px rgba(28, 28, 26, 0.06);
+  --shadow-lg: 0 12px 32px rgba(28, 28, 26, 0.14), 0 2px 6px rgba(28, 28, 26, 0.08);
+
+  --ambient:
+    radial-gradient(125% 95% at 50% -16%, rgba(255, 253, 247, 0.76), transparent 52%),
+    radial-gradient(120% 92% at 50% 124%, rgba(204, 192, 168, 0.3), transparent 58%);
+  --rail-tint: color-mix(in srgb, var(--surface) 66%, transparent);
 }
 
 * {
@@ -93,26 +223,27 @@ body {
   font-family: var(--font);
   font-size: 13.5px;
   line-height: 1.5;
-  font-feature-settings: 'cv11', 'ss01', 'ss03';
+  /* Inter's fancy feature set: cleaner lowercase a/g/l (cv), single-storey
+     glyph sets (ss), and optical sizing so large text picks the Display cut. */
+  font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv09', 'cv11', 'ss01', 'ss03';
+  font-optical-sizing: auto;
   color: var(--text);
   background: var(--bg);
+  transition: color var(--dur-slow) ease, background var(--dur-slow) ease;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
   overflow: hidden;
 }
 
-/* Ambient radial glow — gives the black background a subtle sense of depth */
+/* Ambient radial glow — gives the backdrop a subtle sense of depth */
 body::before {
   content: '';
   position: fixed;
   inset: 0;
   pointer-events: none;
   z-index: 0;
-  background:
-    radial-gradient(ellipse 75% 50% at 12% -5%, rgba(255, 255, 255, 0.18), transparent 60%),
-    radial-gradient(ellipse 55% 45% at 92% 105%, rgba(34, 211, 238, 0.13), transparent 60%),
-    radial-gradient(ellipse 40% 30% at 95% 0%, rgba(163, 230, 53, 0.06), transparent 60%);
+  background: var(--ambient);
 }
 
 #root {
@@ -134,13 +265,22 @@ input[type='number'] {
   font-variant-numeric: tabular-nums;
 }
 
-/* Text selection */
-::selection {
-  background: var(--accent-glow);
-  color: #fff;
+/* Keyboard focus — ONE neutral ink ring for every control that doesn't
+   define its own (same recipe as .btn). Without it the browser's default
+   ring shows, tinted by the OS accent (amber, green…) and off-palette.
+   :where() keeps specificity at zero so component styles still win. */
+:where(button, a[href], summary, [role='menuitem'], [role='option'], [tabindex]):focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--ink) 40%, transparent);
+  outline-offset: 1px;
 }
 
-/* Scrollbar default (thin, accent on hover) */
+/* Text selection — hot blue, readable in both themes */
+::selection {
+  background: color-mix(in srgb, var(--hot) 80%, transparent);
+  color: var(--on-hot);
+}
+
+/* Scrollbar default (thin, brighter on hover) */
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
@@ -149,10 +289,46 @@ input[type='number'] {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.06);
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
   border-radius: 3px;
   transition: background var(--dur) var(--ease);
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.55);
+  background: color-mix(in srgb, var(--ink) 55%, transparent);
+}
+
+/* ── Theme flip (View Transitions) — drop every default so only the JS
+   circular reveal in lib/theme.ts plays. Old snapshot sits still below;
+   the new theme is wiped in over it by an expanding clip-path circle. ── */
+::view-transition {
+  pointer-events: none;
+}
+::view-transition-group(root) {
+  animation: none;
+}
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation: none;
+  mix-blend-mode: normal;
+}
+::view-transition-old(root) {
+  z-index: 0;
+}
+::view-transition-new(root) {
+  z-index: 1;
+}
+/* While the flip runs, colours must land instantly — the circular wipe is
+   the transition. lib/theme.ts toggles this class around the flip. */
+html.theme-flipping *,
+html.theme-flipping *::before,
+html.theme-flipping *::after {
+  transition-duration: 0s !important;
+}
+
+/* Respect reduced-motion: keep fades, drop movement */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
 }

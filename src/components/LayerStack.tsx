@@ -1,3 +1,4 @@
+import { plainText } from '../lib/effects'
 import { useMemo } from 'react'
 import {
   DndContext,
@@ -13,7 +14,7 @@ import {
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
-import { useCarouselStore, type PlacedMedia } from '../store/useCarouselStore'
+import { useTiovivoStore, type PlacedMedia } from '../store/useTiovivoStore'
 
 function LayerRow({
   item,
@@ -31,38 +32,18 @@ function LayerRow({
     transform: CSS.Transform.toString(transform),
     transition,
     opacity: isDragging ? 0.6 : 1,
-    display: 'flex',
-    alignItems: 'center',
-    gap: 8,
-    padding: '4px 6px',
-    borderRadius: 4,
-    background: isSelected ? 'rgba(59,130,246,0.25)' : 'rgba(255,255,255,0.04)',
-    border: `1px solid ${isSelected ? 'rgba(59,130,246,0.6)' : 'rgba(255,255,255,0.08)'}`,
-    cursor: 'grab',
-    userSelect: 'none',
   }
 
   return (
     <div
       ref={setNodeRef}
+      className={`layer-stack__row ${isSelected ? 'layer-stack__row--selected' : ''}`}
       style={style}
       onClick={(e) => onSelect(e.shiftKey || e.metaKey || e.ctrlKey)}
       {...attributes}
       {...listeners}
     >
-      <div
-        style={{
-          width: 22,
-          height: 22,
-          flexShrink: 0,
-          borderRadius: 3,
-          background: 'rgba(0,0,0,0.5)',
-          overflow: 'hidden',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-        }}
-      >
+      <div className="layer-stack__thumb">
         {item.type === 'video' ? (
           <video
             src={item.src}
@@ -70,30 +51,30 @@ function LayerRow({
             playsInline
             preload="metadata"
             draggable={false}
-            style={{ width: '100%', height: '100%', objectFit: 'cover', pointerEvents: 'none' }}
           />
+        ) : item.type === 'text' ? (
+          <span className="layer-stack__text-icon" aria-hidden>
+            T
+          </span>
+        ) : item.type === 'shape' ? (
+          // Shapes have no bitmap (src is '') — an <img> would show a
+          // broken-image glyph.
+          <span className="layer-stack__text-icon" aria-hidden>
+            {item.shapeKind === 'ellipse' ? '◯' : item.shapeKind === 'line' ? '─' : item.shapeKind === 'cursor' ? '➤' : '▭'}
+          </span>
         ) : (
           <img
             src={item.src}
             alt=""
             draggable={false}
-            style={{ width: '100%', height: '100%', objectFit: 'cover', pointerEvents: 'none' }}
           />
         )}
       </div>
       <span
-        style={{
-          fontSize: 11,
-          color: 'rgba(255,255,255,0.85)',
-          whiteSpace: 'nowrap',
-          overflow: 'hidden',
-          textOverflow: 'ellipsis',
-          flex: 1,
-          minWidth: 0,
-        }}
-        title={item.name}
+        className="layer-stack__name"
+        title={item.type === 'text' ? (plainText(item) || item.name) : item.name}
       >
-        {item.name}
+        {item.type === 'text' ? (plainText(item) || 'Text') : item.name}
       </span>
     </div>
   )
@@ -103,39 +84,45 @@ export default function LayerStack({
   slideId,
   slideIndex,
   slideAbsoluteX,
+  slideAbsoluteY,
   slideWidth,
   slideHeight,
-  slideAbsoluteXBySlideId,
+  slideAbsolutePosBySlideId,
 }: {
   slideId: string
   slideIndex: number
   slideAbsoluteX: number
+  slideAbsoluteY: number
   slideWidth: number
   slideHeight: number
-  slideAbsoluteXBySlideId: Map<string, number>
+  slideAbsolutePosBySlideId: Map<string, { x: number; y: number }>
 }) {
-  const items = useCarouselStore((s) => s.items)
-  const reorderSlideLayers = useCarouselStore((s) => s.reorderSlideLayers)
-  const setSelected = useCarouselStore((s) => s.setSelected)
-  const toggleSelected = useCarouselStore((s) => s.toggleSelected)
-  const setActiveSlide = useCarouselStore((s) => s.setActiveSlide)
-  const selectedIds = useCarouselStore((s) => s.selectedIds)
+  const items = useTiovivoStore((s) => s.items)
+  const reorderSlideLayers = useTiovivoStore((s) => s.reorderSlideLayers)
+  const setSelected = useTiovivoStore((s) => s.setSelected)
+  const toggleSelected = useTiovivoStore((s) => s.toggleSelected)
+  const setActiveSlide = useTiovivoStore((s) => s.setActiveSlide)
+  const selectedIds = useTiovivoStore((s) => s.selectedIds)
 
-  // Items that visually overlap this slide's region (both X and Y).
-  // All slides share the same Y range, so Y overlap is: item.y..item.y+h vs 0..slideHeight.
+  // Items that visually overlap this slide's region — fully 2D, so slides
+  // in different ROWS never claim each other's items even when they share
+  // the same X range.
   const slideItems = useMemo(() => {
     const slideLeft = slideAbsoluteX
     const slideRight = slideAbsoluteX + slideWidth
+    const slideTop = slideAbsoluteY
+    const slideBottom = slideAbsoluteY + slideHeight
     return items.filter((it) => {
-      const homeX = slideAbsoluteXBySlideId.get(it.slideId)
-      if (homeX === undefined) return false
-      const itemLeft = homeX + it.x
+      const home = slideAbsolutePosBySlideId.get(it.slideId)
+      if (home === undefined) return false
+      const itemLeft = home.x + it.x
       const itemRight = itemLeft + it.width
-      const xOverlap = itemRight > slideLeft && itemLeft < slideRight
-      const yOverlap = it.y + it.height > 0 && it.y < slideHeight
-      return xOverlap && yOverlap
+      const itemTop = home.y + it.y
+      const itemBottom = itemTop + it.height
+      return itemRight > slideLeft && itemLeft < slideRight &&
+        itemBottom > slideTop && itemTop < slideBottom
     })
-  }, [items, slideAbsoluteX, slideWidth, slideHeight, slideAbsoluteXBySlideId])
+  }, [items, slideAbsoluteX, slideAbsoluteY, slideWidth, slideHeight, slideAbsolutePosBySlideId])
 
   // Top of list = top of z-stack = last in global array.
   const displayItems = useMemo(() => slideItems.slice().reverse(), [slideItems])
@@ -157,34 +144,15 @@ export default function LayerStack({
     reorderSlideLayers(slideId, orderedIds)
   }
 
+  // Floating under the artboard — an empty stack is pure noise, skip it.
   if (slideItems.length === 0) return null
 
   return (
     <div
       onMouseDown={(e) => e.stopPropagation()}
-      style={{
-        display: 'flex',
-        flexDirection: 'column',
-        gap: 3,
-        padding: 6,
-        background: 'rgba(20,20,28,0.85)',
-        border: '1px solid rgba(255,255,255,0.08)',
-        borderRadius: 6,
-        backdropFilter: 'blur(6px)',
-      }}
+      className="layer-stack"
     >
-      <div
-        style={{
-          fontSize: 10,
-          color: 'rgba(255,255,255,0.4)',
-          fontFamily: 'var(--mono)',
-          textTransform: 'uppercase',
-          letterSpacing: 0.5,
-          padding: '2px 4px 4px',
-        }}
-      >
-        Layers · Slide {slideIndex + 1}
-      </div>
+      <div className="layer-stack__title">Layers · Slide {slideIndex + 1}</div>
       <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
         <SortableContext items={displayItems.map((it) => it.id)} strategy={verticalListSortingStrategy}>
           {displayItems.map((it) => (

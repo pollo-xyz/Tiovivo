@@ -7,47 +7,118 @@
   flex-direction: column;
   height: 100%;
   min-height: 100vh;
-  background: var(--bg);
+  /* Transparent over body — the ambient wash (body::before) breathes
+     through the translucent rails; the canvas host paints its own ground. */
+  background: transparent;
+}
+
+/* Keep scroll affordances present but quiet. The app leans on dense panels;
+   loud native scrollbars read like extra borders in that context. */
+.app * {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--ink) 7%, transparent) transparent;
+}
+.app *::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+.app *::-webkit-scrollbar-track {
+  background: transparent;
+}
+.app *::-webkit-scrollbar-thumb {
+  min-height: 28px;
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--ink) 10%, transparent);
+  background-clip: content-box;
+}
+.app *::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--ink) 16%, transparent);
+  background-clip: content-box;
+}
+
+/* ── Boot entrance — the chrome assembles once per launch: header settles
+   down, rails slide in from their edges, the canvas fades up last. Each
+   region is a persistent mount so these play exactly once. Opt-in via
+   no-preference (reduced motion boots static).
+   fill: backwards, NOT both — a filled transform/opacity animation keeps a
+   stacking context on the region forever, which painted the canvas OVER
+   the header's dropdowns. backwards covers the stagger delay, then
+   releases the element completely. ── */
+@media (prefers-reduced-motion: no-preference) {
+  .app__header   { animation: boot-header  360ms var(--ease) backwards; }
+  .app__sidebar  { animation: boot-inspect 400ms var(--ease) 90ms backwards; }
+  .app__main     { animation: boot-canvas  480ms var(--ease) 120ms backwards; }
+}
+
+/* Explicit stacking for the chrome regions (flex items take z-index
+   directly): the header and rails always paint above the canvas, so
+   their popovers can never be covered by it — even mid-boot. */
+.app__header  { z-index: 30; }
+.app__sidebar { z-index: 12; }
+@keyframes boot-header  { from { opacity: 0; transform: translateY(-8px); } }
+@keyframes boot-inspect { from { opacity: 0; transform: translateX(12px); } }
+@keyframes boot-canvas  { from { opacity: 0; } }
+
+/* ── Tooltip bubble (TipHost) — the app's native title= tooltips restyled
+   as an inverted card: accent ground, on-accent text, quick pop from the
+   anchored edge. Portals to body; JS owns the 350ms open delay. ── */
+.tip-bubble {
+  width: max-content;
+  max-width: 280px;
+  padding: 5px 10px;
+  border-radius: var(--r);
+  /* Surface card (pick 9B) — same family as menus, not an inverted card. */
+  border: 1px solid var(--border-bright);
+  background: var(--surface-3);
+  color: var(--text-bright);
+  font-family: var(--meta);
+  font-size: 0.75rem;
+  font-weight: 550;
+  letter-spacing: -0.005em;
+  line-height: 1.45;
+  white-space: pre-line;
+  box-shadow: 0 10px 26px -8px rgba(0, 0, 0, 0.4);
+  animation: tip-in 160ms var(--ease-pop) both;
+  transform-origin: bottom center;
+}
+.tip-bubble[data-place='bottom'] {
+  transform-origin: top center;
+}
+.tip-bubble[data-place='right'] {
+  transform-origin: left center;
+}
+.tip-bubble[data-place='left'] {
+  transform-origin: right center;
+}
+@keyframes tip-in {
+  from { opacity: 0; transform: translateY(3px) scale(0.96); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tip-bubble { animation-duration: 0.01ms; }
 }
 
 /* ================================================================
-   HEADER — frosted glass, macOS traffic-light aware
+   HEADER — flat surface, hairline rule, macOS traffic-light aware
    ================================================================ */
 
 .app__header {
   position: relative;
   display: flex;
-  flex-wrap: wrap;
+  /* ONE strip, never two: the Electron titleBarOverlay is a fixed 55px
+     band, so a wrapped second row would slide under the window buttons.
+     Narrow windows compact the row instead (see the media query below). */
+  flex-wrap: nowrap;
   align-items: center;
-  gap: 8px 14px;
-  padding: 9px 18px 9px 82px;
-  min-height: 54px;
+  gap: 8px 16px;
+  /* Default header padding for non-Mac platforms. macOS overrides the
+     left side to leave room for the traffic-light buttons (see below). */
+  padding: 8px 16px;
+  min-height: 56px;
   flex-shrink: 0;
-  background: linear-gradient(
-    180deg,
-    rgba(15, 15, 22, 0.92) 0%,
-    rgba(10, 10, 16, 0.85) 100%
-  );
-  backdrop-filter: blur(18px) saturate(1.4);
-  -webkit-backdrop-filter: blur(18px) saturate(1.4);
-  border-bottom: 1px solid var(--border);
+  background: var(--rail-tint);
+  border-bottom: 1px solid var(--border-strong);
   -webkit-app-region: drag;
-}
-
-/* Subtle highlight line along the top of the header */
-.app__header::before {
-  content: '';
-  position: absolute;
-  inset: 0 0 auto 0;
-  height: 1px;
-  background: linear-gradient(
-    90deg,
-    transparent,
-    rgba(255, 255, 255, 0.08) 20%,
-    rgba(255, 255, 255, 0.08) 80%,
-    transparent
-  );
-  pointer-events: none;
 }
 
 .app__header button,
@@ -62,33 +133,25 @@
 .app__brand {
   display: flex;
   align-items: center;
-  gap: 9px;
-  padding-right: 6px;
-  margin-right: 2px;
+  margin-right: 4px;
+  padding: 4px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+  transition: background var(--dur-fast) var(--ease);
+}
+.app__brand:hover,
+.app__brand[aria-pressed='true'] {
+  background: color-mix(in srgb, var(--ink) 7%, transparent);
 }
 .app__brand-mark {
-  width: 24px;
-  height: 24px;
-  border-radius: 7px;
-  background: #3b82f6;
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.28),
-    inset 0 0 0 1px rgba(255, 255, 255, 0.06),
-    0 4px 14px rgba(59, 130, 246, 0.55),
-    0 1px 3px rgba(0, 0, 0, 0.4);
-  display: grid;
-  place-items: center;
-  color: #fff;
-  font-weight: 800;
-  font-size: 12.5px;
-  letter-spacing: -0.04em;
-  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.35);
-}
-.app__brand-title {
-  font-size: 0.82rem;
-  font-weight: 550;
-  color: var(--text-bright);
-  letter-spacing: -0.02em;
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+  object-fit: cover;
+  display: block;
 }
 .app__brand-sep {
   width: 1px;
@@ -97,25 +160,272 @@
   margin: 0 4px;
 }
 
-/* ── Preset segmented group (pill) ── */
+/* macOS: leave room for the traffic-light buttons that sit on top of the
+   window chrome. Windows / Linux don't have them on the left so the
+   default 18px is fine. */
+.platform-mac .app__header {
+  padding-left: 110px;
+}
+
+/* ── In-app menus (Windows / Linux only) ─────────────────────────────
+   File / Edit / View live INSIDE the header row now — one strip of
+   chrome instead of two. The group stretches to the header's full
+   height so its dropdowns hang from the header's bottom edge; the
+   native close/min/max buttons (titleBarOverlay, header-height) land
+   top-right, so the header reserves their footprint. */
+.menubar {
+  position: relative;
+  align-self: stretch;
+  /* Cancel the header's block padding so this group spans its FULL height —
+     dropdowns (top: 100%) then hang exactly from the header's bottom edge. */
+  margin-block: -8px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-right: 6px;
+  user-select: none;
+  -webkit-app-region: no-drag;
+}
+/* macOS: hide entirely. Native menu lives at the top of the screen. */
+.platform-mac .menubar { display: none; }
+/* Reserve room for the titleBarOverlay window controls. */
+.platform-win .app__header,
+.platform-other .app__header {
+  padding-right: 150px;
+}
+
+.menubar__btn {
+  -webkit-app-region: no-drag;
+  background: transparent;
+  border: none;
+  border-radius: var(--r-sm);
+  height: 30px;
+  color: color-mix(in srgb, var(--ink) 78%, transparent);
+  font-family: inherit;
+  font-size: 0.78rem;
+  font-weight: 500;
+  padding: 0 10px;
+  cursor: default;
+  transition: background 0.1s var(--ease);
+}
+.menubar__btn:hover {
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
+}
+.menubar__btn--active {
+  background: color-mix(in srgb, var(--ink) 10%, transparent);
+  color: var(--text-bright);
+}
+
+/* Top-level dropdown panel anchored beneath the menubar buttons. */
+.menubar__dropdown {
+  position: absolute;
+  top: calc(100% + 4px);
+  -webkit-app-region: no-drag;
+  min-width: 220px;
+  /* toqe menu anatomy: padded shell, rounded option rows, neutral hover. */
+  padding: 4px;
+  background: color-mix(in srgb, var(--glass-tint) 98%, transparent);
+  border: 1px solid color-mix(in srgb, var(--ink) 10%, transparent);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-lg);
+  backdrop-filter: blur(20px) saturate(1.4);
+  -webkit-backdrop-filter: blur(20px) saturate(1.4);
+  z-index: 200;
+  animation: popover-in var(--dur-quick) var(--ease-pop) both;
+  transform-origin: top left;
+}
+
+.menubar__item {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  padding: 5px 12px 5px 10px;
+  border-radius: var(--r-xs);
+  font-size: 0.78rem;
+  color: var(--text);
+  cursor: default;
+  transition: background 0.08s var(--ease);
+  position: relative;
+  white-space: nowrap;
+}
+.menubar__item:hover:not(.menubar__item--disabled),
+.menubar__item:focus-visible {
+  background: color-mix(in srgb, var(--ink) 7%, transparent);
+  color: var(--text-bright);
+}
+/* Keyboard navigation lands on rows: the hover wash IS the focus mark, so
+   drop the browser ring (a ring inside a 4px-padded menu reads as noise). */
+.menubar__item:focus-visible {
+  outline: none;
+}
+.menubar__btn:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--ink) 40%, transparent);
+  outline-offset: -2px;
+}
+.menubar__item--disabled {
+  color: color-mix(in srgb, var(--ink) 35%, transparent);
+  cursor: default;
+}
+.menubar__item-label {
+  flex: 1;
+}
+.menubar__item-shortcut {
+  font-size: 0.7rem;
+  color: color-mix(in srgb, var(--ink) 45%, transparent);
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.menubar__separator {
+  height: 1px;
+  margin: 4px 8px;
+  background: color-mix(in srgb, var(--ink) 8%, transparent);
+}
+
+/* Submenu: pops out to the right of its parent item on hover. */
+.menubar__item--has-submenu .menubar__item-arrow {
+  font-size: 0.85rem;
+  color: color-mix(in srgb, var(--ink) 55%, transparent);
+  line-height: 1;
+}
+.menubar__submenu {
+  position: absolute;
+  left: 100%;
+  top: -4px;
+  margin-left: 2px;
+  min-width: 240px;
+  padding: 4px;
+  background: color-mix(in srgb, var(--glass-tint) 98%, transparent);
+  border: 1px solid color-mix(in srgb, var(--ink) 10%, transparent);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-lg);
+  backdrop-filter: blur(20px) saturate(1.4);
+  -webkit-backdrop-filter: blur(20px) saturate(1.4);
+  display: none;
+}
+.menubar__item--has-submenu:hover > .menubar__submenu {
+  display: block;
+}
+
+/* Solid veil that covers the canvas during export. Konva keeps drawing
+   (frame capture depends on it), the user just doesn't see the stage
+   transform get reset and the videos seek frame by frame. Z-index sits
+   below the toast (20) so the status chip stays visible on top. */
+.app__export-veil {
+  position: absolute;
+  inset: 0;
+  /* Background is set inline from the store's workspaceBgColor so the
+     veil seamlessly matches whatever pasteboard colour is in use. */
+  z-index: 15;
+  pointer-events: none;
+  animation: export-veil-in 0.18s ease-out;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.app__export-veil-img {
+  max-width: 92%;
+  max-height: 92%;
+  object-fit: contain;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55), 0 4px 14px rgba(0, 0, 0, 0.40);
+  /* Slight rounded edge so the preview reads as a "picture" rather than
+     pretending to be the live canvas. */
+  border-radius: 4px;
+}
+@keyframes export-veil-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+/* Floating export status toast — pinned to the top-right of the canvas
+   area. Lives here instead of the header so its constantly-changing
+   ffmpeg progress string doesn't jitter the header layout. Width grows
+   to fit content; never reaches the left edge thanks to max-width. */
+.app__export-toast {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 12px 7px 10px;
+  background: color-mix(in srgb, var(--glass-tint) 92%, transparent);
+  border: 1px solid color-mix(in srgb, var(--ink) 10%, transparent);
+  border-radius: 8px;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.45), 0 2px 6px rgba(0, 0, 0, 0.30);
+  backdrop-filter: blur(14px) saturate(1.3);
+  -webkit-backdrop-filter: blur(14px) saturate(1.3);
+  font-size: 0.75rem;
+  color: color-mix(in srgb, var(--ink) 82%, transparent);
+  font-variant-numeric: tabular-nums;
+  max-width: min(420px, 50vw);
+  user-select: none;
+  pointer-events: none;
+}
+.app__export-toast-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.app__export-toast-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 0 color-mix(in srgb, var(--hot) 55%, transparent);
+  animation: pulse-dot 1.4s ease-in-out infinite;
+  flex-shrink: 0;
+}
+@keyframes pulse-dot {
+  0%, 100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--hot) 55%, transparent);
+    transform: scale(1);
+  }
+  50% {
+    box-shadow: 0 0 0 6px color-mix(in srgb, var(--hot) 0%, transparent);
+    transform: scale(1.12);
+  }
+}
+
+/* ── Preset segmented group — recessed track, raised active thumb ── */
+/* Segmented control — toqe's .subtabs: a flat pill track holding pill
+   segments; the active one inverts to solid ink. No recessed well, no
+   raised thumb — the fill IS the state. */
 .app__presets {
   position: relative;
   display: flex;
   align-items: stretch;
-  gap: 1px;
+  gap: 2px;
   padding: 3px;
-  background: rgba(255, 255, 255, 0.035);
-  border: 1px solid var(--border);
-  border-radius: var(--r-pill);
+  background: color-mix(in srgb, var(--ink) 4%, transparent);
+  border: none;
+  border-radius: var(--r-sm);
   flex-shrink: 0;
 }
 
 .app__presets .btn {
   position: relative;
   z-index: 1;
-  border-radius: var(--r-pill);
-  padding: 5px 13px;
+  border-radius: calc(var(--r-sm) - 3px);
+  /* 24px segments inside the 3px-padded track = the same 30px tier as
+     every other header control. */
+  min-height: 24px;
+  padding: 0 13px;
   gap: 0;
+}
+
+/* Inactive segments sit flat inside the recessed track; the active thumb
+   (.btn--accent or .btn--seg-active) keeps its raised --accent-soft fill. */
+.app__presets .btn:not(.btn--accent):not(.btn--seg-active) {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+  color: var(--text);
+}
+.app__presets .btn:not(.btn--accent):not(.btn--seg-active):hover:not(:disabled) {
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
+  color: var(--text-bright);
 }
 
 /* ── Custom size row ── */
@@ -123,32 +433,47 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 0.76rem;
+  font-size: 0.78rem;
   color: var(--text-dim);
   padding: 0 4px;
 }
 
+/* Each W/H block is a single visual chip: small-caps label + numeric input.
+   align-items: stretch makes the label fill the full chip height so its
+   capital letter is vertically centred against the digits; line-height: 1
+   on the label gets rid of the extra baseline padding that pushed the
+   letter visibly upward of the input numbers. */
 .app__custom-size label {
   display: flex;
-  align-items: center;
-  gap: 5px;
+  align-items: stretch;
+  gap: 6px;
+  height: 30px;
   cursor: default;
   font-variant-caps: all-small-caps;
   letter-spacing: 0.08em;
   color: var(--text-dim);
-  font-size: 0.72rem;
-  font-weight: 500;
+  font-size: 0.85rem;
+  font-weight: 600;
+  line-height: 30px;
 }
 
 .app__custom-size input {
-  width: 4.4rem;
-  padding: 5px 8px;
+  /* Wide enough for 4 digits in tabular numerals + small breathing room.
+     We never realistically exceed 9999 px on either axis (the upper limit
+     in the store is 8192) so anything more is wasted header real estate. */
+  width: 3.6rem;
+  height: 30px;
+  padding: 0 9px;
   border-radius: var(--r-sm);
   border: 1px solid var(--border);
-  background: rgba(0, 0, 0, 0.4);
+  background: color-mix(in srgb, var(--well-tint) calc(40% * var(--well-scale)), transparent);
   color: var(--text-bright);
   text-align: right;
-  font-size: 0.78rem;
+  font-size: 0.95rem;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+  line-height: 30px;
   transition: border-color var(--dur) var(--ease),
     background var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
 }
@@ -157,12 +482,104 @@
   border-color: var(--border-strong);
 }
 
+/* Quiet focus (toqe/Plaza convention): a slightly brighter hairline, no
+   glow, no blue — the caret is signal enough, and blue means selection. */
 .app__custom-size input:focus {
   outline: none;
-  border-color: var(--accent-strong);
-  background: rgba(59, 130, 246, 0.04);
-  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.14);
+  border-color: var(--border-bright);
+  box-shadow: none;
 }
+
+/* Drag-to-scrub inputs (NumberField with `scrubStep`). Idle cursor hints at
+   the drag affordance; on :focus the text cursor takes over so click-to-type
+   feels normal. Native number spinners go away too — they're redundant once
+   horizontal-drag scrubbing is in. */
+input.scrubbable {
+  cursor: ew-resize;
+  -moz-appearance: textfield;
+}
+input.scrubbable::-webkit-outer-spin-button,
+input.scrubbable::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input.scrubbable:focus {
+  cursor: text;
+}
+
+/* Tiny aspect-lock toggle that sits between W and H inputs. Square button
+   with a chain icon; lit when constraints are enforced. */
+.app__aspect-lock {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+
+/* Header icon buttons — toqe's topbar chrome icons: borderless rounded
+   squares, tint on hover, solid ink when a toggle is on. */
+.hdr-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: none;
+  border-radius: var(--r);
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  transition:
+    background var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease);
+}
+.hdr-icon:hover {
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
+  color: var(--text-bright);
+}
+.hdr-icon:active {
+  transform: var(--press);
+}
+.hdr-icon--on {
+  background: var(--accent-soft);
+  color: var(--text-bright);
+  box-shadow:
+    var(--shadow-sm),
+    inset 0 1px 0 color-mix(in srgb, var(--ink) 10%, transparent);
+}
+.hdr-icon--on:hover {
+  background: color-mix(in srgb, var(--accent-soft) 82%, var(--ink));
+  color: var(--text-bright);
+}
+.hdr-icon:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ink) 12%, transparent);
+}
+.app__aspect-lock:hover {
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
+  color: var(--text);
+}
+.app__aspect-lock--locked {
+  background: var(--accent-soft);
+  color: var(--text-bright);
+  box-shadow: var(--shadow-sm);
+}
+.app__aspect-lock--locked:hover {
+  background: color-mix(in srgb, var(--accent-soft) 82%, var(--ink));
+}
+
+/* Filename-format toggle that lives inside the Name pill. Reads as a button
+   even when inactive (visible border, hover state) so the affordance is
+   obvious, but stays compact mono since it shows the literal filename suffix. */
 
 .app__custom-size span {
   color: var(--text-dim);
@@ -172,19 +589,40 @@
 
 .app__spacer {
   flex: 1;
+  min-width: 0;
+}
+
+/* Every header control holds its size; only the spacer gives way. */
+.app__header > :not(.app__spacer) {
+  flex-shrink: 0;
+}
+
+/* Narrow windows (the desktop minimum is 900px, minus 150px reserved for
+   the window buttons): tighten the rhythm and drop the format chip's
+   pixel readout — the ratio label still names the format, and the exact
+   size is one click away in its popover. */
+@media (max-width: 1080px) {
+  .app__header { column-gap: 10px; }
+  .app__format-dims { display: none; }
 }
 
 /* ================================================================
    BUTTONS
    ================================================================ */
 
+/* ONE ghost default (Rolando's pick 2D): text only at rest, a soft ink
+   wash appears on hover. No borders, no fills, no shadows on ordinary
+   buttons — state and affordance come from hover and press. */
 .btn {
   display: inline-flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: 1px;
-  padding: 6px 12px;
+  /* Exactly the 30px control tier — flex centres the label, so vertical
+     padding stays 0 and min-height owns the height. */
+  min-height: 30px;
+  padding: 0 14px;
   border-radius: var(--r-sm);
   border: 1px solid transparent;
   background: transparent;
@@ -202,86 +640,89 @@
 }
 
 .btn:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.055);
+  background: color-mix(in srgb, var(--ink) 7%, transparent);
   color: var(--text-bright);
 }
 
 .btn:active:not(:disabled) {
-  transform: scale(0.97);
+  transform: var(--press);
 }
 
 .btn:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 2px var(--accent-strong);
+  /* Outline (not box-shadow) so it stacks with any existing box-shadow on
+     the button. Neutral ink — keyboard focus, not selection. */
+  outline: 2px solid color-mix(in srgb, var(--ink) 40%, transparent);
+  outline-offset: 1px;
 }
 
 .btn:disabled {
-  opacity: 0.38;
+  opacity: 1;
+  color: color-mix(in srgb, var(--ink) 25%, transparent);
+  background: transparent;
+  box-shadow: none;
   cursor: not-allowed;
 }
 
 /* Subtext hint (e.g. "1920×1080") */
-.btn__hint {
-  font-size: 0.58rem;
-  opacity: 0.45;
-  font-family: var(--mono);
-  font-weight: 400;
-  letter-spacing: 0;
-  margin-top: 1px;
-}
 
-/* Active/selected preset — vivid violet glow pill */
-.btn--accent {
-  background: linear-gradient(180deg, rgba(59, 130, 246, 0.32), rgba(59, 130, 246, 0.18));
-  color: #fff;
+/* Active/selected toggle — the raised neutral thumb (Rolando's pick 1C):
+   a lifted --accent-soft fill with hairline and soft shadow, clearly a
+   physical "pressed-in segment" against the ghost buttons around it. */
+.btn--accent,
+.btn--seg-active {
+  background: var(--accent-soft);
+  color: var(--text-bright);
+  border-color: var(--border-bright);
   box-shadow:
-    inset 0 0 0 1px rgba(255, 255, 255, 0.55),
-    inset 0 1px 0 rgba(255, 255, 255, 0.15),
-    0 0 22px -2px rgba(59, 130, 246, 0.65),
-    0 2px 8px rgba(59, 130, 246, 0.35);
+    var(--shadow-sm),
+    inset 0 1px 0 color-mix(in srgb, var(--ink) 10%, transparent);
 }
-.btn--accent:hover:not(:disabled) {
-  background: linear-gradient(180deg, rgba(59, 130, 246, 0.42), rgba(59, 130, 246, 0.24));
-  color: #fff;
-}
-.btn--accent .btn__hint {
-  opacity: 0.92;
-  color: var(--accent-hi);
+.btn--accent:hover:not(:disabled),
+.btn--seg-active:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent-soft) 82%, var(--ink));
+  border-color: var(--border-bright);
+  color: var(--text-bright);
 }
 
-/* Export CTA — bold violet→magenta gradient with cyan whisper */
+/* Export CTA — ink solid. The one filled-with-accent button in the app:
+   near-white on Onyx, near-black on Cream. Blue never appears on a CTA so
+   it stays free to mean "selected" everywhere else. */
 .btn--export {
   position: relative;
   flex-direction: row;
   gap: 7px;
   align-items: center;
-  padding: 7px 16px 7px 13px;
-  background: #3b82f6;
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  color: #fff;
+  min-height: 30px;
+  padding: 0 16px 0 13px;
+  background: var(--accent);
+  border: 1px solid transparent;
+  color: var(--on-accent);
   font-weight: 600;
-  font-size: 0.79rem;
+  font-size: 0.78rem;
   letter-spacing: -0.01em;
   border-radius: var(--r-sm);
-  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.3);
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.25),
-    inset 0 -1px 0 rgba(0, 0, 0, 0.22),
-    0 6px 20px -2px rgba(59, 130, 246, 0.55),
-    0 1px 3px rgba(0, 0, 0, 0.4);
+    var(--shadow-sm),
+    0 4px 14px -6px color-mix(in srgb, var(--accent) 45%, transparent);
   transition:
-    filter var(--dur) var(--ease),
+    transform var(--dur-fast) var(--ease),
     box-shadow var(--dur) var(--ease),
-    transform 80ms var(--ease);
+    background var(--dur-fast) var(--ease);
 }
 
+/* The one CTA that lifts on hover (and presses on click). */
 .btn--export:hover:not(:disabled) {
-  background: #60a5fa;
+  background: var(--accent-hi);
+  /* Keep the dark on-accent text — the base .btn:hover flips color to
+     --text-bright, which would match this light fill and vanish. */
+  color: var(--on-accent);
+  transform: translateY(-1px);
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.32),
-    inset 0 -1px 0 rgba(0, 0, 0, 0.22),
-    0 8px 28px -2px rgba(59, 130, 246, 0.75),
-    0 1px 3px rgba(0, 0, 0, 0.4);
+    var(--shadow-sm),
+    0 10px 26px -10px color-mix(in srgb, var(--accent) 55%, transparent);
+}
+.btn--export:active:not(:disabled) {
+  transform: var(--press);
 }
 
 .btn--export svg {
@@ -290,24 +731,8 @@
   stroke-width: 2.2;
 }
 
-.btn--ghost {
-  background: transparent;
-  border-color: transparent;
-}
-
-.slide-strip__actions .btn--ghost:not(.btn--danger):hover:not(:disabled) {
-  background: rgba(59, 130, 246, 0.18);
-  color: #60a5fa;
-  border-color: rgba(59, 130, 246, 0.35);
-}
-
-.btn--outline {
-  border-color: var(--border-strong);
-}
-.btn--outline:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.04);
-  border-color: var(--border-bright);
-}
+/* .btn--ghost and .btn--outline retired — the ghost default IS every
+   ordinary button now. The classes are harmless where they linger. */
 
 .btn--danger {
   color: var(--danger);
@@ -319,16 +744,15 @@
 }
 
 .btn--sm {
-  padding: 4px 9px;
-  font-size: 0.72rem;
-  border-radius: var(--r-xs);
+  min-height: 26px;
+  padding: 0 11px;
+  font-size: 0.75rem;
+  border-radius: var(--r-sm);
 }
 
-.btn__icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-}
+/* .btn--seg-active shares the raised-thumb active treatment defined with
+   .btn--accent above, so every "pick one" control in the app reads the
+   same way. */
 
 /* ================================================================
    BODY / SIDEBAR
@@ -338,31 +762,300 @@
   display: flex;
   flex: 1;
   min-height: 0;
-  background: var(--bg);
+  background: transparent;
 }
 
+/* Three-column layout via flex `order` so the existing sidebar block can move
+   to the right without relocating its ~800 lines of JSX. Left = permanent
+   project navigator, centre = canvas, right = situational inspector. */
+
+.app__main { order: 1; }
+.app__sidebar { order: 2; }
+
+/* RIGHT — inspector: same panel styling as before, now on the right edge */
 .app__sidebar {
-  width: 272px;
+  width: 296px;
   flex-shrink: 0;
   padding: 16px 14px 22px;
-  border-right: 1px solid var(--border);
-  overflow-y: auto;
+  border-left: 1px solid var(--border-strong);
+  /* `scroll` + `scrollbar-gutter: stable` keeps the gutter reserved even when
+     content fits, so the sidebar's interior width never jumps when a section
+     expands/collapses. Without this, the scrollbar appears and disappears,
+     reflowing every inner control by ~8 px. */
+  overflow-y: scroll;
   overflow-x: hidden;
-  background:
-    linear-gradient(180deg, var(--surface) 0%, rgba(10, 10, 16, 0.82) 100%);
-  scrollbar-width: thin;
-  scrollbar-color: rgba(255, 255, 255, 0.08) transparent;
+  scrollbar-gutter: stable;
+  background: var(--rail-tint);
   position: relative;
 }
 
-/* Inner top highlight for a subtle sense of elevation */
-.app__sidebar::before {
-  content: '';
+/* Shared building blocks used by the BackgroundPanel and any other field that
+   needs a color picker, a small monospace value readout, or a palette swatch
+   grid. Defining these once keeps the panel's inline styles to a minimum and
+   ensures borders/sizes match across the sidebar. */
+
+/* Color picker pill — appears in field rows next to a label + hex display.
+   Matches the size/borders used historically by inline-styled colour inputs
+   so we don't double up on aesthetics. */
+.color-swatch {
+  width: 32px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid color-mix(in srgb, var(--ink) 16%, transparent);
+  border-radius: var(--r-xs);
+  background: color-mix(in srgb, var(--well-tint) calc(26% * var(--well-scale)), transparent);
+  cursor: pointer;
+}
+
+/* Browsers wrap <input type="color"> internals in a swatch wrapper and a
+   swatch element, both with their own default padding/borders. Without
+   resetting them the visible colour shrinks to a tiny inset rectangle.
+   Apply globally so any colour input in the app — class-based or inline-
+   styled (the per-slide bg picker under each artboard) — fills its bounds. */
+input[type='color']::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+input[type='color']::-webkit-color-swatch {
+  border: none;
+  border-radius: 2px;
+}
+input[type='color']::-moz-color-swatch {
+  border: none;
+  border-radius: 2px;
+}
+
+/* Compact mono readout — hex codes after a colour picker, "mixed" labels. */
+.field__value {
+  font-size: 0.7rem;
+  color: color-mix(in srgb, var(--ink) 42%, transparent);
+  font-family: var(--mono);
+  letter-spacing: -0.01em;
+}
+
+/* Palette swatch grid (vibe panel). Larger than .color-swatch and laid out as
+   a wrapping flex row. The "+" add-color button uses the same dimensions for
+   visual rhythm but with a dashed border to flag its add-affordance. */
+.palette-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.palette-swatch {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1.5px solid color-mix(in srgb, var(--ink) 20%, transparent);
+  border-radius: 6px;
+  background: transparent;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.palette-swatch--add {
+  border-style: dashed;
+  border-color: color-mix(in srgb, var(--ink) 25%, transparent);
+  color: color-mix(in srgb, var(--ink) 55%, transparent);
+  font-size: 16px;
+  line-height: 1;
+  transition:
+    border-color var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease);
+}
+.palette-swatch--add:hover {
+  border-color: var(--border-bright);
+  color: var(--text);
+}
+
+/* First palette swatch — the base / background colour. Highlighted with the
+   accent stroke + a soft outer glow so it's distinct from the other points
+   without redesigning the whole row. */
+.palette-swatch--base {
+  border-color: var(--accent-strong);
+  border-width: 2px;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--hot) 18%, transparent);
+}
+
+/* Wrapper that lets a "BG" badge sit on top of the base swatch without
+   intercepting clicks (pointer-events: none on the badge, so the click goes
+   through to the underlying colour input). Sized to match .palette-swatch
+   so flex alignment in .palette-grid stays consistent. */
+.palette-swatch-wrap {
+  position: relative;
+  display: inline-block;
+  width: 28px;
+  height: 28px;
+  line-height: 0;
+}
+.palette-swatch__badge {
   position: absolute;
-  inset: 0 0 auto 0;
-  height: 1px;
-  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.05), transparent);
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   pointer-events: none;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: color-mix(in srgb, var(--ink) 95%, transparent);
+  /* Heavy text-shadow so the label reads against any base colour. Dark and
+     light backgrounds both pull the label toward the opposite. */
+  text-shadow:
+    0 0 1px rgba(0, 0, 0, 0.85),
+    0 0 3px rgba(0, 0, 0, 0.6);
+}
+
+/* Action row under the palette grid — Save preset + Sample from Media. */
+.palette-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 6px;
+}
+.palette-actions .btn {
+  width: 100%;
+  flex-direction: row;
+  gap: 6px;
+  justify-content: center;
+}
+
+/* Footer row under the palette grid — helper text on the left, "Save preset"
+   ghost button on the right. */
+
+/* Inline variant of .hint — no top margin, fits next to a sibling button. */
+.hint--inline {
+  margin: 0;
+  font-size: 0.64rem;
+  line-height: 1.1;
+}
+
+/* Preset palette list — one row per palette: name on the left, colour strip
+   on the right. Custom (user-saved) entries get a delete affordance and a
+   subtle blue tint to distinguish them from the built-ins. */
+.preset-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  /* Bound the list so it always shows ~6 rows; scroll for the rest. Pairs
+     with `scrollbar-gutter: stable` so adding/removing custom entries
+     doesn't reflow the surrounding panel. */
+  max-height: 168px;
+  overflow-y: auto;
+  padding: 4px;
+  margin: 0 -4px;
+  border: 1px solid color-mix(in srgb, var(--ink) 4.5%, transparent);
+  border-radius: var(--r-xs);
+  background: color-mix(in srgb, var(--well-tint) calc(13% * var(--well-scale)), transparent);
+}
+
+/* Small caps label that separates built-ins from user-saved palettes. */
+.preset-list__divider {
+  flex-shrink: 0;
+  font-size: 0.6rem;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  padding: 6px 4px 2px;
+  margin-top: 2px;
+  border-top: 1px dashed color-mix(in srgb, var(--ink) 8%, transparent);
+}
+
+.preset {
+  display: flex;
+  align-items: center;
+  height: 22px;
+  /* Bounded scroll containers use flex-column; default shrink would squish
+     each row instead of letting the container scroll. Lock the row height. */
+  flex-shrink: 0;
+  border: 1px solid color-mix(in srgb, var(--ink) 4.5%, transparent);
+  border-radius: var(--r-xs);
+  overflow: hidden;
+  background: transparent;
+  padding: 0;
+  cursor: pointer;
+  transition: border-color var(--dur-fast) var(--ease);
+}
+.preset:hover {
+  border-color: color-mix(in srgb, var(--ink) 15%, transparent);
+}
+
+.preset__pick {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  gap: 0;
+}
+
+.preset__name {
+  width: 60px;
+  flex-shrink: 0;
+  padding: 0 6px;
+  text-align: left;
+  font-size: 0.64rem;
+  color: color-mix(in srgb, var(--ink) 42%, transparent);
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.preset__swatches {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+}
+.preset__swatches > span {
+  flex: 1;
+}
+
+.preset--custom {
+  border-color: color-mix(in srgb, var(--hot-hi) 28%, transparent);
+}
+.preset--custom .preset__name {
+  color: color-mix(in srgb, var(--hot-pale) 85%, transparent);
+}
+
+/* Inline rename input replaces .preset__name while editing. Sized to match
+   the static label exactly so the row doesn't jump when you start typing. */
+.preset__name-input {
+  border: 1px solid color-mix(in srgb, var(--hot) 45%, transparent);
+  background: color-mix(in srgb, var(--well-tint) calc(40% * var(--well-scale)), transparent);
+  color: color-mix(in srgb, var(--hot-pale) 95%, transparent);
+  border-radius: 3px;
+  padding: 0 4px;
+  font: inherit;
+  font-size: 0.64rem;
+  letter-spacing: 0.02em;
+  outline: none;
+}
+
+.preset__delete {
+  width: 18px;
+  height: 100%;
+  border: none;
+  border-left: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 0.75rem;
+  line-height: 1;
+  flex-shrink: 0;
+  transition: color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
+}
+.preset__delete:hover {
+  color: var(--danger-hi);
+  background: color-mix(in srgb, var(--ink) 4%, transparent);
 }
 
 /* Section labels */
@@ -384,24 +1077,26 @@
   opacity: 0.75;
 }
 
-/* ── Collapsible sections — card-style ── */
+/* ── Collapsible sections — ruled editorial sections, not cards.
+   Each section hangs from a hairline rule (Vignelli: "type hangs
+   from the ruler"); no boxes, no fills — whitespace does the work. ── */
 
 .collapsible {
-  border: 1px solid var(--border);
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.015), rgba(255, 255, 255, 0));
-  border-radius: var(--r);
-  padding: 10px 12px 2px;
-  margin-bottom: 10px;
-  transition: border-color var(--dur) var(--ease), background var(--dur) var(--ease);
+  border: none;
+  border-top: 1px solid var(--border-strong);
+  background: transparent;
+  border-radius: 0;
+  padding: 10px 2px 6px;
+  margin-bottom: 8px;
+  transition: border-color var(--dur) var(--ease);
 }
 
 .collapsible:hover {
-  border-color: var(--border-strong);
+  border-top-color: var(--border-bright);
 }
 
 .collapsible[open] {
   padding-bottom: 12px;
-  background: linear-gradient(180deg, rgba(59, 130, 246, 0.02), rgba(255, 255, 255, 0));
 }
 
 .collapsible summary {
@@ -432,9 +1127,9 @@
   content: '';
   width: 14px;
   height: 14px;
-  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='rgba(255,255,255,0.42)' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'><path d='M9 6l6 6-6 6'/></svg>");
-  background-repeat: no-repeat;
-  background-position: center;
+  background-color: color-mix(in srgb, var(--ink) 42%, transparent);
+  -webkit-mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'><path d='M9 6l6 6-6 6'/></svg>") no-repeat center;
+  mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'><path d='M9 6l6 6-6 6'/></svg>") no-repeat center;
   transition: transform var(--dur) var(--ease-spring);
 }
 
@@ -442,45 +1137,34 @@
   transform: rotate(90deg);
 }
 
+/* Animated disclosure — height 0 ⇄ auto via interpolate-size (set on :root),
+   with the toqe accordion's fade+blur ride-along. content-visibility must
+   transition discretely or the close snaps shut before the height plays. */
+.collapsible::details-content {
+  height: 0;
+  overflow: clip;
+  opacity: 0;
+  filter: blur(2px);
+  transition:
+    height var(--dur-open) var(--ease),
+    opacity var(--dur-open) var(--ease),
+    filter var(--dur-open) var(--ease),
+    content-visibility var(--dur-open) allow-discrete;
+}
+.collapsible[open]::details-content {
+  height: auto;
+  opacity: 1;
+  filter: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .collapsible::details-content { transition: none; }
+}
+
 .collapsible__body {
   padding: 10px 0 2px;
 }
 
 /* ── Drop zone ── */
-
-.drop-zone {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  padding: 22px 14px;
-  border: 1px dashed rgba(255, 255, 255, 0.1);
-  border-radius: var(--r);
-  text-align: center;
-  font-size: 0.78rem;
-  color: var(--text-dim);
-  cursor: pointer;
-  background: linear-gradient(
-    180deg,
-    rgba(255, 255, 255, 0.015),
-    rgba(255, 255, 255, 0)
-  );
-  transition:
-    border-color var(--dur) var(--ease),
-    background var(--dur) var(--ease),
-    color var(--dur) var(--ease);
-}
-
-.drop-zone:hover {
-  border-color: var(--accent-strong);
-  background: rgba(59, 130, 246, 0.04);
-  color: var(--text);
-}
-
-.drop-zone input {
-  display: none;
-}
 
 /* ── Hint text ── */
 
@@ -499,7 +1183,7 @@
   align-items: center;
   gap: 9px;
   margin: 8px 0;
-  font-size: 0.8rem;
+  font-size: 0.78rem;
   color: var(--text);
 }
 
@@ -511,7 +1195,7 @@
 
 .field > span:first-child,
 .field > *:first-child:not(input):not(select) {
-  font-size: 0.72rem;
+  font-size: 0.75rem;
   color: var(--text-dim);
   font-weight: 500;
   letter-spacing: 0.02em;
@@ -528,17 +1212,20 @@
   color: var(--text-bright);
 }
 
+/* Soft switch: 36×20 with a recessed track and a shadowed knob. Reads at a
+   glance in the sidebar without needing the hover state. */
 .check input[type='checkbox'] {
   appearance: none;
   -webkit-appearance: none;
-  width: 28px;
-  height: 16px;
-  background: rgba(255, 255, 255, 0.08);
+  width: 36px;
+  height: 20px;
+  background: color-mix(in srgb, var(--ink) 10%, transparent);
   border: 1px solid var(--border);
   border-radius: var(--r-pill);
   position: relative;
   cursor: pointer;
   flex-shrink: 0;
+  box-shadow: inset 0 1px 2px color-mix(in srgb, var(--well-tint) 30%, transparent);
   transition:
     background var(--dur) var(--ease),
     border-color var(--dur) var(--ease);
@@ -550,10 +1237,13 @@
   position: absolute;
   top: 50%;
   left: 2px;
-  width: 10px;
-  height: 10px;
+  width: 16px;
+  height: 16px;
   border-radius: 50%;
-  background: rgba(255, 255, 255, 0.55);
+  background: var(--surface-hi);
+  box-shadow:
+    0 1px 3px rgba(0, 0, 0, 0.3),
+    0 0 0 1px var(--border-strong);
   transform: translateY(-50%);
   transition:
     left var(--dur) var(--ease-spring),
@@ -565,42 +1255,251 @@
   border-color: var(--border-strong);
 }
 
+/* On = signal blue (Rolando's pick 3C) — the one control that wears the
+   accent outside canvas selection. */
 .check input[type='checkbox']:checked {
-  background: rgba(59, 130, 246, 0.28);
-  border-color: rgba(59, 130, 246, 0.5);
+  background: var(--hot);
+  border-color: transparent;
 }
 
 .check input[type='checkbox']:checked::after {
-  left: 13px;
-  background: var(--accent-hi);
-  box-shadow: 0 0 8px rgba(59, 130, 246, 0.55);
+  left: 16px;
+  background: var(--on-hot);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
 }
 
-.field input,
-.field select {
-  padding: 6px 9px;
+/* Generic field controls share one look. Color inputs are excluded — they
+   carry their own padding/border via .color-swatch / .palette-swatch and
+   would otherwise inherit text-input padding that shrinks the visible swatch. */
+.field input:not([type='color']),
+.field select,
+.field textarea,
+.field .font-picker__input {
+  box-sizing: border-box;
+  /* The field tier is exactly 32px — vertical padding stays small enough
+     that line-height never pushes past it (textareas still grow). */
+  min-height: 32px;
+  padding: 5px 9px;
   border-radius: var(--r-sm);
-  border: 1px solid var(--border);
-  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid color-mix(in srgb, var(--ink) 5.5%, transparent);
+  background: color-mix(in srgb, var(--well-tint) calc(28% * var(--well-scale)), transparent);
   color: var(--text-bright);
   font-size: 0.78rem;
+  font-family: inherit;
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--ink) 2.5%, transparent);
   transition:
     border-color var(--dur) var(--ease),
     box-shadow var(--dur) var(--ease),
     background var(--dur) var(--ease);
 }
 
-.field input:hover,
-.field select:hover {
-  border-color: var(--border-strong);
+.field textarea {
+  line-height: 1.45;
 }
 
-.field input:focus,
-.field select:focus {
+.field input:not([type='color']):hover,
+.field select:hover,
+.field textarea:hover,
+.field .font-picker__input:hover {
+  border-color: color-mix(in srgb, var(--ink) 12%, transparent);
+}
+
+.field input:not([type='color']):focus,
+.field select:focus,
+.field textarea:focus,
+.field .font-picker__input:focus {
   outline: none;
-  border-color: var(--accent-strong);
-  background: rgba(59, 130, 246, 0.04);
-  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.14);
+  border-color: var(--border-bright);
+  box-shadow: none;
+}
+
+/* ── Font picker (custom combobox with rendered-in-font previews) ── */
+.font-picker {
+  position: relative;
+  width: 100%;
+  min-width: 0;
+}
+.font-picker__input {
+  width: 100%;
+  box-sizing: border-box;
+  font-family: inherit;
+}
+.font-picker__list {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 50;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  max-height: 280px;
+  overflow-y: auto;
+  background: color-mix(in srgb, var(--glass-tint) 98%, transparent);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-lg);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  animation: popover-in var(--dur-quick) var(--ease-pop) both;
+  transform-origin: top left;
+}
+.font-picker__item {
+  padding: 7px 10px;
+  border-radius: var(--r-xs);
+  font-size: 0.85rem;
+  color: var(--text-bright);
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  /* Each row's `font-family` is set inline so the row renders in its own font. */
+}
+.font-picker__item--active {
+  background: color-mix(in srgb, var(--hot) 22%, transparent);
+}
+.font-picker__item--current {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--hot) 35%, transparent);
+}
+.font-picker__empty {
+  padding: 8px 10px;
+  font-size: 0.75rem;
+  color: var(--text-dim);
+  font-style: italic;
+}
+
+/* ── Remove-bg spinner (matches the button's currentColor) ── */
+.remove-bg-spinner {
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  border: 1.5px solid color-mix(in srgb, var(--ink) 18%, transparent);
+  border-top-color: currentColor;
+  animation: remove-bg-spin 0.8s linear infinite;
+  display: inline-block;
+}
+@keyframes remove-bg-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ── Giphy picker popover ── */
+.gif-picker {
+  position: fixed;
+  width: 380px;
+  max-height: 480px;
+  z-index: 200;
+  display: flex;
+  flex-direction: column;
+  background: color-mix(in srgb, var(--glass-tint) 98%, transparent);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-lg);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  overflow: hidden;
+  animation: popover-in var(--dur-open) var(--ease-pop) both;
+  transform-origin: top left;
+}
+/* Flat pill track + ink-wash active segment, matching .app__presets. */
+.gif-picker__tabs {
+  display: flex;
+  gap: 2px;
+  margin: 8px 8px 6px;
+  padding: 3px;
+  background: color-mix(in srgb, var(--ink) 4%, transparent);
+  border: none;
+  border-radius: var(--r-sm);
+}
+.gif-picker__tab {
+  flex: 1;
+  padding: 5px 10px;
+  border: 1px solid transparent;
+  border-radius: calc(var(--r-sm) - 3px);
+  background: transparent;
+  color: color-mix(in srgb, var(--ink) 50%, transparent);
+  font-size: 0.78rem;
+  font-family: inherit;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.gif-picker__tab:hover { color: color-mix(in srgb, var(--ink) 85%, transparent); }
+.gif-picker__tab--active {
+  background: var(--accent-soft);
+  color: var(--text-bright);
+  border-color: var(--border-bright);
+  box-shadow:
+    var(--shadow-sm),
+    inset 0 1px 0 color-mix(in srgb, var(--ink) 10%, transparent);
+}
+.gif-picker__search {
+  margin: 0 8px;
+  padding: 7px 10px;
+  border-radius: var(--r-xs);
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--well-tint) calc(40% * var(--well-scale)), transparent);
+  color: var(--text-bright);
+  font-family: inherit;
+  font-size: 0.85rem;
+  outline: none;
+}
+.gif-picker__search:focus {
+  border-color: var(--border-bright);
+  box-shadow: none;
+}
+.gif-picker__grid {
+  /* Flexbox over CSS Grid — when the grid was given `flex: 1` height the
+     auto-row tracks shrank below the cells' aspect-ratio height, leaving
+     each row top only ~45 px from the previous one (cells were 117 px
+     tall, so each row overlapped two-thirds into the next). Flex-wrap
+     respects per-item explicit height/aspect cleanly. */
+  display: flex;
+  flex-wrap: wrap;
+  align-content: flex-start;
+  gap: 6px;
+  padding: 8px;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 220px;
+}
+.gif-picker__cell {
+  position: relative;
+  padding: 0;
+  /* Three uniform 1:1 cells per row. width = (100% - 2 × gap) / 3 */
+  width: calc((100% - 12px) / 3);
+  aspect-ratio: 1 / 1;
+  border: 1px solid color-mix(in srgb, var(--ink) 6%, transparent);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--well-tint) calc(30% * var(--well-scale)), transparent);
+  cursor: pointer;
+  overflow: hidden;
+  transition: border-color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
+}
+.gif-picker__cell:hover {
+  border-color: color-mix(in srgb, var(--hot) 50%, transparent);
+  transform: scale(1.03);
+}
+.gif-picker__cell-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.gif-picker__empty {
+  flex: 1 1 100%;
+  padding: 24px 12px;
+  text-align: center;
+  color: var(--text-dim);
+  font-size: 0.78rem;
+}
+.gif-picker__footer {
+  padding: 6px 10px;
+  border-top: 1px solid color-mix(in srgb, var(--ink) 6%, transparent);
+  font-size: 0.64rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: color-mix(in srgb, var(--ink) 35%, transparent);
+  text-align: right;
 }
 
 /* Select arrow */
@@ -608,49 +1507,34 @@
   appearance: none;
   -webkit-appearance: none;
   padding-right: 26px;
-  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='rgba(255,255,255,0.5)' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='M6 9l6 6 6-6'/></svg>");
+  background-image: var(--select-arrow);
   background-repeat: no-repeat;
   background-position: right 8px center;
   background-size: 12px;
-  background-color: rgba(0, 0, 0, 0.35);
+  background-color: color-mix(in srgb, var(--well-tint) calc(35% * var(--well-scale)), transparent);
 }
 
 .app__sidebar hr {
   border: none;
-  border-top: 1px solid var(--border);
+  border-top: 1px solid color-mix(in srgb, var(--ink) 5.5%, transparent);
   margin: 12px 0;
 }
 
 /* ── Selection panel ── */
 
+/* The one place the accent draws a structural line: a 2pt vermilion
+   rule marks the live selection context (Vignelli's major ruler). */
 .selection-panel {
-  margin-top: 14px;
-  padding: 14px 12px 12px;
-  border-radius: var(--r);
-  border: 1px solid var(--border);
-  background:
-    linear-gradient(180deg, rgba(59, 130, 246, 0.04) 0%, rgba(255, 255, 255, 0) 100%);
+  margin-top: 16px;
+  padding: 12px 2px 4px;
+  border: none;
+  border-top: 2px solid var(--hot);
+  border-radius: 0;
+  background: transparent;
   position: relative;
   display: flex;
   flex-direction: column;
   gap: 4px;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
-}
-
-.selection-panel::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: 12px;
-  right: 12px;
-  height: 1px;
-  background: linear-gradient(
-    90deg,
-    transparent 0%,
-    rgba(59, 130, 246, 0.95) 50%,
-    transparent 100%
-  );
-  box-shadow: 0 0 12px rgba(59, 130, 246, 0.55);
 }
 
 .selection-panel h2 {
@@ -681,7 +1565,7 @@
 
 .slider-field__value {
   font-family: var(--mono);
-  font-size: 0.69rem;
+  font-size: 0.7rem;
   color: var(--accent-hi);
   font-variant-numeric: tabular-nums;
   letter-spacing: -0.01em;
@@ -699,48 +1583,65 @@
   margin: 0;
 }
 
+/* Ink-instrument slider: monochrome 2px track (bright fill, faint rest),
+   small rectangular thumb — audio-console feel. With half a dozen sliders
+   open at once the panel stays quiet; hot stays reserved for selection. */
 .slider-field input[type='range']::-webkit-slider-runnable-track {
-  height: 3px;
+  height: 2px;
   background: linear-gradient(
     90deg,
-    #3b82f6 0%,
-    #3b82f6 var(--fill, 50%),
-    rgba(255, 255, 255, 0.08) var(--fill, 50%),
-    rgba(255, 255, 255, 0.08) 100%
+    color-mix(in srgb, var(--ink) 75%, transparent) 0%,
+    color-mix(in srgb, var(--ink) 75%, transparent) var(--fill, 50%),
+    color-mix(in srgb, var(--ink) 16%, transparent) var(--fill, 50%),
+    color-mix(in srgb, var(--ink) 16%, transparent) 100%
   );
-  border-radius: 3px;
-  box-shadow: 0 0 10px -2px rgba(59, 130, 246, 0.45);
+  border-radius: 1px;
 }
 
 .slider-field input[type='range']::-webkit-slider-thumb {
   -webkit-appearance: none;
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  background: #fff;
+  width: 7px;
+  height: 15px;
+  border-radius: 2.5px;
+  background: var(--ink);
   cursor: grab;
   border: none;
-  margin-top: -5.5px;
-  box-shadow:
-    0 0 0 1px rgba(59, 130, 246, 0.4),
-    0 2px 8px rgba(59, 130, 246, 0.4),
-    0 1px 3px rgba(0, 0, 0, 0.4);
+  margin-top: -6.5px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
   transition:
     transform var(--dur) var(--ease-spring),
     box-shadow var(--dur) var(--ease);
 }
 
 .slider-field input[type='range']::-webkit-slider-thumb:hover {
-  transform: scale(1.2);
-  box-shadow:
-    0 0 0 2px rgba(59, 130, 246, 0.55),
-    0 4px 14px rgba(59, 130, 246, 0.55),
-    0 1px 3px rgba(0, 0, 0, 0.4);
+  transform: scale(1.15);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
 }
 
 .slider-field input[type='range']:active::-webkit-slider-thumb {
   cursor: grabbing;
-  transform: scale(1.1);
+  transform: scale(1.08);
+}
+
+/* Compact typography button strip used by the Text panel. Keeps the bold /
+   italic and alignment controls on the same visual grid. */
+.text-style-toolbar {
+  align-items: center;
+  gap: 5px;
+  margin-top: 10px;
+}
+.text-style-toolbar__spacer {
+  flex: 1;
+}
+.text-style-btn {
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
+  padding: 0;
+  flex-direction: row;
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  line-height: 1;
 }
 
 /* ================================================================
@@ -761,14 +1662,352 @@
   align-items: stretch;
   justify-content: stretch;
   overflow: hidden;
-  background:
-    radial-gradient(ellipse 70% 50% at 50% 50%, rgba(59, 130, 246, 0.025), transparent 70%),
-    var(--bg);
+  /* The work area reads as its own recessed layer, always distinguishable
+     from the surrounding chrome. The stage paints the actual pasteboard
+     color (theme "auto" or user-picked) on top of this backdrop. */
+  background: var(--canvas-bg);
   position: relative;
 }
 
 .editor-stage-wrap {
   background: transparent;
+}
+
+/* On-canvas HUD: stays a dark translucent pill in BOTH themes so its light
+   text reads over any pasteboard or a bright zoomed-in slide behind it.
+   (--glass-tint is light on Cream, which is why we don't use it here.) */
+/* Theme-following glass, same recipe as .canvas-tools — it no longer
+   forces dark in the Cream theme (the wash made it the loudest element
+   on screen). Forced-dark stays only on overlays that sit ON artwork. */
+.zoom-pill {
+  font-family: var(--mono);
+  min-width: 92px;
+  border-radius: var(--r);
+  border: 1px solid color-mix(in srgb, var(--ink) 7.5%, transparent);
+  background: color-mix(in srgb, var(--glass-tint) 88%, transparent);
+  /* Quiet shadow — the pill sits 10px from the canvas edge, so a big soft
+     one gets clipped by the host and shows a hard cut line. */
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18), inset 0 1px 0 color-mix(in srgb, var(--ink) 4%, transparent);
+  backdrop-filter: blur(14px) saturate(1.18);
+  -webkit-backdrop-filter: blur(14px) saturate(1.18);
+  overflow: hidden;
+}
+.zoom-pill .btn {
+  border-radius: 0;
+  /* Opt out of any button dressing — buttons inside the glass pill read
+     as one joined control, not stacked cards. */
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+  color: var(--text);
+}
+.zoom-pill .btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--ink) 8%, transparent);
+  border-color: transparent;
+  color: var(--text-bright);
+}
+
+/* "+" between artboards — themed glass disc; luminance-adaptive glyph
+   via --chrome-fg so it stays readable on custom pasteboard colors. */
+.artboard-add-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 1.5px solid var(--chrome-fg-faint);
+  background: color-mix(in srgb, var(--glass-tint) 85%, transparent);
+  color: var(--chrome-fg-med);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition:
+    border-color var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease),
+    background var(--dur-fast) var(--ease);
+}
+.artboard-add-btn:hover {
+  border-color: var(--hot);
+  background: var(--hot);
+  color: var(--on-hot);
+}
+
+/* Canvas-side chrome should read as editor UI, not part of the artwork. */
+.artboard-label {
+  font-size: 11px;
+  font-weight: 650;
+  font-family: var(--meta);
+  color: var(--chrome-fg);
+  white-space: nowrap;
+  user-select: none;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 5px;
+  border: 1px solid color-mix(in srgb, var(--ink) 7.5%, transparent);
+  border-radius: var(--r-xs);
+  background: color-mix(in srgb, var(--glass-tint) 72%, transparent);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.26);
+  backdrop-filter: blur(10px) saturate(1.15);
+  -webkit-backdrop-filter: blur(10px) saturate(1.15);
+  transition:
+    color var(--dur-fast) var(--ease),
+    background var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease),
+    opacity var(--dur-fast) var(--ease);
+}
+.artboard-label--active {
+  border-color: color-mix(in srgb, var(--hot) 34%, transparent);
+  background: var(--hot-veil);
+}
+.artboard-label--drop-target,
+.artboard-label--dragged {
+  color: var(--text-bright);
+  border-color: color-mix(in srgb, var(--hot) 55%, transparent);
+  background: color-mix(in srgb, var(--hot) 24%, transparent);
+}
+.artboard-label__name {
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.artboard-label__export {
+  height: 16px;
+  padding: 0 5px;
+  border-radius: var(--r-xs);
+  border: 1px solid color-mix(in srgb, var(--ink) 10%, transparent);
+  background: color-mix(in srgb, var(--ink) 4.5%, transparent);
+  color: var(--chrome-fg-dim);
+  font-size: 9px;
+  font-weight: 650;
+  font-family: system-ui, sans-serif;
+  line-height: 14px;
+  cursor: pointer;
+}
+.artboard-label__export--on {
+  color: var(--hot-text);
+  border-color: color-mix(in srgb, var(--hot) 34%, transparent);
+  background: color-mix(in srgb, var(--hot) 22%, transparent);
+}
+.artboard-label__icon {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--chrome-fg-dim);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+.artboard-label__icon:hover {
+  color: var(--chrome-fg);
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
+}
+.artboard-label__icon--danger:hover {
+  color: var(--danger-hi);
+  background: color-mix(in srgb, var(--danger) 11%, transparent);
+}
+.artboard-bg-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 6px 3px 3px;
+  border: 1px solid color-mix(in srgb, var(--ink) 5.5%, transparent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--glass-tint) 48%, transparent);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+.artboard-bg-chip input[type='color'] {
+  width: 20px;
+  height: 20px;
+  border: 1px solid var(--chrome-fg-faint);
+  border-radius: 4px;
+  padding: 0;
+  cursor: pointer;
+  background: transparent;
+}
+.artboard-bg-chip__value {
+  font-size: 11px;
+  color: var(--chrome-fg-dim);
+  font-family: var(--mono);
+}
+
+.floating-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px 4px;
+  border: 1px solid color-mix(in srgb, var(--ink) 7.5%, transparent);
+  border-radius: var(--r-md);
+  background: color-mix(in srgb, var(--glass-tint) 90%, transparent);
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.32), inset 0 1px 0 color-mix(in srgb, var(--ink) 4%, transparent);
+  backdrop-filter: blur(14px) saturate(1.18);
+  -webkit-backdrop-filter: blur(14px) saturate(1.18);
+  white-space: nowrap;
+  /* Pops in when a selection appears. The keyframes carry the inline
+     translateX(-50%) centring — animating transform would clobber it. */
+  animation: floatbar-in var(--dur-quick) var(--ease-pop) both;
+  transform-origin: top center;
+}
+@keyframes floatbar-in {
+  from { opacity: 0; transform: translateX(-50%) translateY(3px) scale(0.97); }
+  to   { opacity: 1; transform: translateX(-50%); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .floating-toolbar { animation-duration: 0.01ms; }
+}
+/* Toolbar icon buttons — theme tokens, so they read in BOTH themes (the
+   old inline styles hardcoded light icons: invisible on Cream's glass). */
+.ftb-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  border-radius: calc(var(--r-sm) - 3px);
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  transition:
+    background var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease);
+}
+.ftb-btn:hover {
+  background: color-mix(in srgb, var(--ink) 8%, transparent);
+  color: var(--text-bright);
+}
+.ftb-btn--on {
+  background: color-mix(in srgb, var(--ink) 11%, transparent);
+  color: var(--text-bright);
+}
+.ftb-btn--wide {
+  width: auto;
+  padding: 0 10px;
+  gap: 4px;
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+/* Commit action of a mode (crop Apply, erase Done) — the ink-solid CTA
+   voice, same as Export. */
+.ftb-btn--primary,
+.ftb-btn--primary:hover {
+  background: var(--accent);
+  color: var(--on-accent);
+  font-weight: 600;
+}
+.ftb-btn--primary:hover {
+  background: var(--accent-hi);
+}
+
+/* Buttons inside the glass toolbar stay flat; raised-on-glass reads as
+   border noise. Active toggles (.btn--accent) keep their raised thumb. */
+.floating-toolbar .btn:not(.btn--accent):not(.btn--seg-active) {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+}
+.floating-toolbar .btn:not(.btn--accent):not(.btn--seg-active):hover:not(:disabled) {
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
+  border-color: transparent;
+}
+
+/* Floating per-slide layer stack — lives under each artboard on the
+   pasteboard. Frosted glass (floating chrome), hairline border, and a
+   tracked micro-label title, matching the Signal floating-chrome recipe. */
+.layer-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 7px;
+  border: 1px solid var(--glass-border);
+  border-radius: var(--r-md);
+  /* Near-opaque tint, NO backdrop blur: every slide carries one of these,
+     and N live blur regions re-sample the canvas behind them on every pan
+     frame. The blur bought almost nothing at 94% opacity. */
+  background: color-mix(in srgb, var(--glass-tint) 94%, transparent);
+  box-shadow: var(--shadow), var(--glass-highlight);
+  animation: layer-stack-in var(--dur) var(--ease) both;
+}
+@keyframes layer-stack-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.layer-stack__title {
+  padding: 1px 4px 4px;
+  font-family: var(--meta);
+  font-size: 9px;
+  font-weight: 600;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+.layer-stack__row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 6px;
+  border: 1px solid color-mix(in srgb, var(--ink) 5.5%, transparent);
+  border-radius: var(--r-xs);
+  background: color-mix(in srgb, var(--ink) 2.5%, transparent);
+  transition:
+    background var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease);
+  cursor: grab;
+  user-select: none;
+}
+.layer-stack__row:hover {
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
+  border-color: var(--border-strong);
+}
+.layer-stack__row--selected,
+.layer-stack__row--selected:hover {
+  border-color: color-mix(in srgb, var(--hot) 46%, transparent);
+  background: var(--hot-veil);
+}
+.layer-stack__thumb {
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+  border-radius: 4px;
+  background: rgba(10, 11, 15, 0.42);
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.layer-stack__thumb img,
+.layer-stack__thumb video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  pointer-events: none;
+}
+.layer-stack__text-icon {
+  color: color-mix(in srgb, var(--ink) 78%, transparent);
+  font-weight: 700;
+  font-size: 12px;
+  line-height: 1;
+  font-family: var(--mono);
+}
+.layer-stack__name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: color-mix(in srgb, var(--ink) 78%, transparent);
 }
 
 /* ── Drop overlay (drag file onto canvas) ── */
@@ -777,35 +2016,21 @@
   position: absolute;
   inset: 14px;
   z-index: 20;
-  background: rgba(10, 8, 20, 0.55);
+  background: color-mix(in srgb, var(--glass-tint) 55%, transparent);
   backdrop-filter: blur(12px) saturate(1.2);
   -webkit-backdrop-filter: blur(12px) saturate(1.2);
-  border: 1.5px dashed rgba(59, 130, 246, 0.55);
+  border: 1.5px dashed color-mix(in srgb, var(--hot) 70%, transparent);
   border-radius: var(--r-lg);
   display: flex;
   align-items: center;
   justify-content: center;
   pointer-events: none;
-  box-shadow:
-    inset 0 0 0 1px rgba(59, 130, 246, 0.08),
-    0 0 0 1px rgba(0, 0, 0, 0.3),
-    inset 0 0 80px rgba(59, 130, 246, 0.08);
   animation: drop-pulse 1.6s var(--ease) infinite alternate;
 }
 
 @keyframes drop-pulse {
-  from {
-    box-shadow:
-      inset 0 0 0 1px rgba(59, 130, 246, 0.08),
-      0 0 0 1px rgba(0, 0, 0, 0.3),
-      inset 0 0 60px rgba(59, 130, 246, 0.06);
-  }
-  to {
-    box-shadow:
-      inset 0 0 0 1px rgba(59, 130, 246, 0.18),
-      0 0 0 1px rgba(0, 0, 0, 0.3),
-      inset 0 0 100px rgba(59, 130, 246, 0.14);
-  }
+  from { border-color: color-mix(in srgb, var(--hot) 45%, transparent); }
+  to   { border-color: color-mix(in srgb, var(--hot) 85%, transparent); }
 }
 
 .drop-overlay__content {
@@ -814,7 +2039,7 @@
   align-items: center;
   gap: 16px;
   color: var(--text-bright);
-  font-size: 0.92rem;
+  font-size: 0.95rem;
   font-weight: 500;
   letter-spacing: -0.01em;
 }
@@ -823,14 +2048,11 @@
   width: 56px;
   height: 56px;
   border-radius: 50%;
-  background:
-    radial-gradient(circle at 50% 45%, rgba(59, 130, 246, 0.35), rgba(59, 130, 246, 0.08)),
-    rgba(59, 130, 246, 0.12);
-  border: 1.5px solid rgba(59, 130, 246, 0.5);
+  background: var(--hot);
+  border: none;
   display: grid;
   place-items: center;
-  color: #fff;
-  box-shadow: 0 0 40px rgba(59, 130, 246, 0.3);
+  color: var(--on-hot);
 }
 
 .drop-overlay__icon svg {
@@ -844,7 +2066,7 @@
   align-items: center;
   padding: 2px 8px;
   border-radius: var(--r-pill);
-  background: rgba(59, 130, 246, 0.18);
+  background: color-mix(in srgb, var(--hot) 18%, transparent);
   color: var(--accent-hi);
   font-family: var(--mono);
   font-size: 0.78rem;
@@ -853,22 +2075,116 @@
 }
 
 /* ================================================================
+   SLIDE DECK — bottom overview rail under the canvas. Click to jump,
+   drag to reorder, "+" appends. Active slide wears the offset ring:
+   a 2px hot outline with a 2px gap that never touches the artwork.
+   ================================================================ */
+
+.slide-strip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  padding: 10px 14px;
+  border-top: 1px solid var(--border-strong);
+  background: var(--rail-tint);
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.slide-strip__list {
+  display: flex;
+  flex-direction: row;
+  gap: 8px;
+}
+
+.slide-thumb {
+  position: relative;
+  height: 52px;
+  flex-shrink: 0;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--r-xs);
+  background: color-mix(in srgb, var(--well-tint) calc(40% * var(--well-scale)), transparent);
+  cursor: pointer;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: border-color var(--dur-fast) var(--ease);
+}
+.slide-thumb:hover {
+  border-color: var(--border-bright);
+}
+.slide-thumb--active {
+  outline: 2px solid var(--hot);
+  outline-offset: 2px;
+  border-color: var(--border-bright);
+}
+/* "+" tile — a quiet dashed ghost at the end of the deck. */
+.slide-thumb--add {
+  border-style: dashed;
+  border-color: var(--border-strong);
+  background: transparent;
+  color: var(--text-dim);
+  overflow: visible;
+  transition:
+    border-color var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease),
+    background var(--dur-fast) var(--ease);
+}
+.slide-thumb--add:hover {
+  border-color: var(--border-bright);
+  background: color-mix(in srgb, var(--ink) 4%, transparent);
+  color: var(--text-bright);
+}
+
+.slide-thumb__img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  pointer-events: none;
+}
+
+.slide-thumb__num {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.slide-thumb__badge {
+  position: absolute;
+  bottom: 3px;
+  left: 3px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--glass-tint) 85%, transparent);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 9px;
+  line-height: 14px;
+  text-align: center;
+  pointer-events: none;
+}
+
+/* ================================================================
    ARTBOARD CANVAS OVERLAYS
    ================================================================ */
 
-.artboard-remove-btn {
-  background: none;
-  border: none;
-  cursor: pointer;
-  padding: 0 3px;
-  line-height: 1;
-  font-size: 12px;
-  color: rgba(255, 255, 255, 0.32);
-  transition: color var(--dur) var(--ease);
-}
-
-.artboard-remove-btn:hover {
-  color: var(--danger);
+/* Quiet first-step hint on empty artboards. Fixed screen-space size; the
+   colour is mixed from the theme ink so it reads on both light and dark
+   slide backgrounds without shouting. */
+.artboard-empty-hint span {
+  max-width: 78%;
+  text-align: center;
+  font-family: var(--meta);
+  font-size: 0.78rem;
+  line-height: 1.5;
+  color: rgba(128, 128, 126, 0.75);
+  user-select: none;
 }
 
 /* ================================================================
@@ -879,36 +2195,17 @@ kbd {
   display: inline-block;
   padding: 2px 6px;
   font-family: var(--mono);
-  font-size: 0.68rem;
+  font-size: 0.7rem;
   background: var(--surface-3);
   border: 1px solid var(--border-strong);
   border-radius: var(--r-xs);
   color: var(--text);
-  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.4), inset 0 1px 0 color-mix(in srgb, var(--ink) 5%, transparent);
 }
 
 /* ================================================================
    COVER FRAME PICKER
    ================================================================ */
-
-.cover-frame-picker {
-  margin-top: 14px;
-  padding-top: 14px;
-  border-top: 1px solid var(--border);
-}
-
-.cover-frame-picker h2 {
-  margin: 0 0 10px;
-}
-
-.cover-frame-picker canvas {
-  display: block;
-  width: 100%;
-  border-radius: var(--r-sm);
-  border: 1px solid var(--border);
-  overflow: hidden;
-  box-shadow: var(--shadow-sm);
-}
 
 /* ================================================================
    MISC UTILITIES
@@ -916,13 +2213,1066 @@ kbd {
 
 .divider {
   height: 1px;
-  background: linear-gradient(90deg, transparent, var(--border-strong), transparent);
-  margin: 14px 0;
+  background: var(--border-strong);
+  margin: 16px 0;
   border: none;
 }
 
 /* Focus ring reset for mouse clicks */
 .btn:focus:not(:focus-visible) {
+  /* Suppress only the focus outline for non-keyboard focus (e.g. the
+     button keeps focus after a mouse click). Crucially do NOT clear
+     box-shadow — that would wipe the accent glow on .btn--accent
+     immediately after the user clicks one. */
   outline: none;
-  box-shadow: none;
 }
+
+/* ================================================================
+   FEEDBACK — toasts + confirm dialog (in-app alert/confirm)
+   ================================================================ */
+
+.toasts {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 400; /* above the gif picker (200) and export toast (20) */
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: min(420px, calc(100vw - 32px));
+  pointer-events: none;
+}
+
+.toast {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 11px 12px 11px 14px;
+  background: var(--glass-bg-strong);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--r-md);
+  backdrop-filter: var(--blur);
+  -webkit-backdrop-filter: var(--blur);
+  box-shadow: var(--shadow-lg), var(--glass-highlight);
+  color: var(--text-bright);
+  pointer-events: auto;
+  animation: toast-in var(--dur-open) var(--ease-pop);
+  /* Exit is a transition (not a keyframe) so it stays interruptible. */
+  transition:
+    opacity var(--dur-slow) var(--ease),
+    transform var(--dur-slow) var(--ease);
+}
+
+.toast--leaving {
+  opacity: 0;
+  transform: translateY(6px) scale(0.98);
+  pointer-events: none;
+}
+
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(8px) scale(0.97); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.toast__icon {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  font-size: 11px;
+  line-height: 1;
+  margin-top: 1px;
+}
+
+.toast--info .toast__icon    { background: var(--warm-dim);   color: var(--warm-hi); }
+.toast--success .toast__icon { background: var(--cool-dim);   color: var(--success); }
+.toast--error .toast__icon   { background: var(--danger-dim); color: var(--danger-hi); }
+.toast--error { border-color: color-mix(in srgb, var(--danger) 35%, transparent); }
+
+.toast__msg {
+  flex: 1;
+  white-space: pre-line; /* alert() messages used \n freely */
+  overflow-wrap: anywhere;
+}
+
+.toast__close {
+  flex: none;
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: var(--r-xs);
+  font-size: 11px;
+  line-height: 1;
+  margin-top: 2px;
+  transition: color var(--dur-fast) var(--ease);
+}
+.toast__close:hover { color: var(--text-bright); }
+
+.confirm__backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 500;
+  display: grid;
+  place-items: center;
+  background: rgba(10, 11, 15, 0.55);
+  backdrop-filter: blur(3px);
+  animation: veil-in var(--dur-quick) ease-out;
+}
+
+@keyframes veil-in {
+  from { opacity: 0; }
+}
+
+/* Solid ruled dialog — destructive/blocking moments get full opacity so
+   nothing bleeds through, with a hairline rule under the title. */
+.confirm {
+  width: 400px;
+  max-width: calc(100vw - 48px);
+  background: var(--surface-3);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-xl);
+  box-shadow: var(--shadow-lg);
+  padding: 20px;
+  /* toqe's modal card-in: rise + settle with a whisper of overshoot. */
+  animation: confirm-in 220ms cubic-bezier(0.2, 0.9, 0.3, 1.06) both;
+}
+@keyframes confirm-in {
+  from { opacity: 0; transform: scale(0.965) translateY(10px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .confirm { animation-duration: 0.01ms; }
+}
+
+.confirm__title {
+  color: var(--text-bright);
+  font-family: var(--display);
+  font-size: 0.95rem;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border-strong);
+  margin-bottom: 12px;
+}
+
+.confirm__message {
+  white-space: pre-line;
+  margin-bottom: 18px;
+}
+
+.confirm__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.confirm__btn {
+  padding: 7px 16px;
+  border-radius: var(--r-sm);
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease),
+              border-color var(--dur-fast) var(--ease);
+}
+.confirm__btn:hover { background: color-mix(in srgb, var(--ink) 9%, transparent); color: var(--text-bright); }
+
+.confirm__btn--primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+  font-weight: 600;
+}
+.confirm__btn--primary:hover {
+  background: var(--accent-deep);
+  border-color: var(--accent-deep);
+  color: var(--on-accent);
+}
+
+.confirm__btn--danger {
+  background: var(--danger);
+  border-color: var(--danger);
+}
+.confirm__btn--danger:hover {
+  background: var(--danger-hi);
+  border-color: var(--danger-hi);
+}
+
+/* ================================================================
+   START SCREEN — the front door. Covers the workspace below the
+   header (which stays live). Swiss sheet: one display question,
+   hairline-ruled sections, flat tiles; nothing floats.
+   ================================================================ */
+.start {
+  position: fixed;
+  inset: 56px 0 0 0;
+  z-index: 25;               /* over the rails (12), under header popovers (30) */
+  overflow-y: auto;
+  background: var(--bg);
+  background-image: var(--ambient);
+  outline: none;
+  animation: start-in var(--dur-open, 240ms) var(--ease) both;
+}
+@keyframes start-in {
+  from { opacity: 0; transform: translateY(6px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .start { animation-duration: 0.01ms; }
+}
+.start__inner {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 280px;
+  gap: 56px;
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 44px 40px 64px;
+}
+.start__main,
+.start__side {
+  display: flex;
+  flex-direction: column;
+  gap: 36px;
+  min-width: 0;
+}
+.start__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+.start__head h1 {
+  margin: 0;
+  font-family: var(--display);
+  font-size: 2.1rem;
+  font-weight: 600;
+  letter-spacing: -0.035em;
+  line-height: 1.05;
+  color: var(--text-bright);
+}
+.start__label {
+  margin: 0 0 14px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-strong);
+  font-family: var(--meta);
+  font-size: 0.64rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+.start__hint {
+  margin: -6px 0 12px;
+  font-size: 0.75rem;
+  color: var(--text-dim);
+}
+
+/* Tiles — blank formats and templates share one anatomy: a picture, a
+   bold name, a quiet line. */
+.start__format,
+.start__template,
+.start__recent {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 10px;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 0.7rem;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
+}
+.start__format:hover,
+.start__template:hover,
+.start__recent:hover {
+  background: color-mix(in srgb, var(--ink) 5%, transparent);
+  border-color: var(--border-strong);
+}
+.start__format b,
+.start__template b,
+.start__recent b {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text-bright);
+}
+.start__formats {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+}
+.start__format-shape {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 84px;
+  margin-bottom: 8px;
+}
+.start__format-shape > span {
+  max-width: 100%;
+  height: 100%;
+  max-height: 84px;
+  border: 1px solid var(--border-bright);
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
+  transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
+}
+.start__format:hover .start__format-shape > span {
+  background: color-mix(in srgb, var(--hot) 22%, transparent);
+  border-color: var(--hot);
+}
+.start__format-dims { font-variant-numeric: tabular-nums; }
+
+.start__templates {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 8px;
+  align-items: end;
+}
+.start__template-thumb {
+  display: block;
+  width: 100%;
+  margin-bottom: 8px;
+  border-radius: 3px;
+  overflow: hidden;
+  box-shadow: 0 0 0 1px var(--border-strong);
+}
+.start__template-thumb img,
+.start__recent-thumb img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.start__recents {
+  list-style: none;
+  margin: 0 -10px 8px;
+  padding: 0;
+}
+.start__recent {
+  flex-direction: row;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 8px 10px;
+}
+.start__recent-thumb {
+  flex: none;
+  width: 72px;
+  height: 44px;
+  border-radius: 3px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
+  box-shadow: 0 0 0 1px var(--border-strong);
+}
+.start__recent-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.start__recent-text b {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.start__open { margin-left: -14px; }
+
+@media (max-width: 1080px) {
+  .start__inner { grid-template-columns: minmax(0, 1fr); gap: 36px; padding: 32px 24px 48px; }
+  .start__formats { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); }
+}
+
+/* ── Brand kit ── */
+.brand-editor { display: flex; flex-direction: column; }
+.brand-editor__colors {
+  display: flex;
+  gap: 14px;
+  margin: 4px 0 6px;
+}
+.brand-editor__color {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 0.7rem;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.brand-editor__color .color-swatch { width: 44px; height: 30px; }
+
+.brand-swatches {
+  display: inline-flex;
+  gap: 4px;
+  flex: none;
+}
+.brand-swatches__dot {
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px var(--border-bright);
+  cursor: pointer;
+  transition: transform var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
+}
+.brand-swatches__dot:hover { transform: scale(1.15); }
+.brand-swatches__dot--on { box-shadow: 0 0 0 1px var(--bg), 0 0 0 2.5px var(--hot); }
+
+/* ================================================================
+   ASSISTANT — Claude on the deck. A sheet over the inspector: same
+   width logic, same ruled sections, so it reads as part of the app.
+   ================================================================ */
+.assistant {
+  position: fixed;
+  inset: 56px 0 0 auto;
+  z-index: 27;
+  width: 372px;
+  max-width: 100vw;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border-left: 1px solid var(--border-strong);
+  box-shadow: var(--shadow-lg);
+  animation: assistant-in var(--dur-open, 240ms) var(--ease) both;
+}
+@keyframes assistant-in {
+  from { opacity: 0; transform: translateX(12px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .assistant { animation-duration: 0.01ms; }
+}
+.assistant__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 12px 12px 18px;
+  border-bottom: 1px solid var(--border-strong);
+}
+.assistant__head h2 {
+  margin: 0;
+  font-family: var(--display);
+  font-size: 0.95rem;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  color: var(--text-bright);
+}
+.assistant__body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  padding: 14px 18px 18px;
+}
+.assistant > .assistant__note { padding: 14px 18px; }
+.assistant__tasks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 0 -6px 10px;
+}
+.assistant__tasks .btn { padding: 0 10px; }
+.assistant__note { margin: 0 0 10px; font-size: 0.78rem; color: var(--text); }
+.assistant__hint { margin: 2px 0 10px; font-size: 0.7rem; color: var(--text-dim); }
+.assistant__error {
+  margin: 10px 0 0;
+  padding: 8px 10px;
+  border-radius: var(--r-sm);
+  background: var(--danger-dim);
+  color: var(--danger-hi);
+  font-size: 0.75rem;
+}
+.assistant__go { align-self: stretch; justify-content: center; margin-top: 6px; }
+.assistant__run {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+}
+.assistant__log {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  font-size: 0.75rem;
+  color: var(--text-dim);
+  min-width: 0;
+}
+.assistant__log li { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.assistant__log-now { color: var(--text-bright); }
+.assistant__summary {
+  margin: 14px 0 10px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-strong);
+  font-size: 0.78rem;
+  color: var(--text-bright);
+  white-space: pre-line;
+}
+.assistant__results { display: flex; flex-direction: column; align-items: flex-start; }
+.assistant__findings,
+.assistant__hooks {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  width: 100%;
+}
+.finding {
+  position: relative;
+  padding: 10px 0 12px 14px;
+  border-top: 1px solid var(--border);
+  font-size: 0.75rem;
+}
+.finding::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 15px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-dim);
+}
+.finding--high::before { background: var(--danger); }
+.finding--medium::before { background: var(--hot); }
+.finding b { display: block; color: var(--text-bright); font-weight: 600; margin: 2px 0; }
+.finding p { margin: 0 0 6px; color: var(--text); }
+.finding .btn { margin-left: -14px; }
+.finding--done { opacity: 0.55; }
+.finding__where {
+  padding: 0;
+  border: 0;
+  background: none;
+  font-family: var(--meta);
+  font-size: 0.64rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.finding__where:hover { color: var(--text-bright); }
+.finding__done { font-size: 0.7rem; color: var(--success); }
+.hook {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: 100%;
+  padding: 10px 10px;
+  margin: 0 -10px;
+  width: calc(100% + 20px);
+  border: 0;
+  border-top: 1px solid var(--border);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  white-space: pre-line;
+  transition: background var(--dur-fast) var(--ease);
+}
+.hook:hover { background: color-mix(in srgb, var(--ink) 5%, transparent); }
+.hook b { font-size: 0.85rem; font-weight: 600; color: var(--text-bright); line-height: 1.25; }
+.hook span { font-size: 0.7rem; color: var(--text-dim); }
+.hook--on { background: var(--hot-veil); }
+.caption {
+  width: 100%;
+  padding: 10px 0 12px;
+  border-top: 1px solid var(--border);
+}
+.caption header { display: flex; align-items: center; justify-content: space-between; }
+.caption h3 {
+  margin: 0;
+  font-family: var(--meta);
+  font-size: 0.64rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+.caption p {
+  margin: 6px 0 0;
+  font-size: 0.78rem;
+  color: var(--text-bright);
+  white-space: pre-wrap;
+  user-select: text;
+}
+.assistant__foot {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: auto;
+  padding-top: 18px;
+  font-size: 0.7rem;
+  color: var(--text-dim);
+}
+
+.brand-learn { margin-top: 6px; }
+.brand-learn > .btn { margin-left: -14px; }
+.brand-learn__found {
+  margin-top: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  font-size: 0.75rem;
+  color: var(--text);
+}
+.brand-learn__found p { margin: 6px 0 0; }
+.brand-learn__found b { color: var(--text-bright); }
+.brand-learn__notes { color: var(--text-dim); }
+.brand-learn__swatches { display: flex; gap: 6px; }
+.brand-learn__swatches span {
+  width: 28px;
+  height: 20px;
+  border-radius: 3px;
+  box-shadow: 0 0 0 1px var(--border-bright);
+}
+.brand-learn__actions { display: flex; gap: 6px; margin-top: 10px; }
+
+/* Connect Claude (built-in MCP server) — rides the confirm card. */
+.confirm.mcp { width: 480px; }
+.mcp__note { margin: 0 0 14px; }
+.mcp__switch { color: var(--text-bright); }
+.mcp__state {
+  margin: 6px 0 16px;
+  font-size: 0.75rem;
+  color: var(--text-dim);
+}
+.mcp__state--error { color: var(--danger); }
+.mcp__label {
+  font-family: var(--meta);
+  font-size: 0.64rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  margin-bottom: 6px;
+}
+.mcp__command {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 6px 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: color-mix(in srgb, var(--ink) 4%, transparent);
+}
+.mcp__command code {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace;
+  font-size: 0.7rem;
+  color: var(--text);
+  user-select: all;
+}
+.mcp__hint {
+  margin: 6px 0 16px;
+  font-size: 0.7rem;
+  color: var(--text-dim);
+}
+.mcp__link {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: var(--text);
+  text-decoration: underline;
+  cursor: pointer;
+}
+.mcp__link:hover { color: var(--text-bright); }
+.mcp .confirm__actions { margin-top: 18px; }
+
+/* ================================================================
+   POPOVER — shared anchored dropdown (Format chip, Export options,
+   canvas View cluster). Host wraps trigger + panel so outside-click
+   detection has one boundary.
+   ================================================================ */
+
+.popover-host {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.popover {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  z-index: 300;
+  min-width: 240px;
+  padding: 14px;
+  font-family: var(--font);
+  font-size: 0.78rem;
+  color: var(--text);
+  background: var(--glass-bg-strong);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-lg), var(--glass-highlight);
+  backdrop-filter: var(--blur);
+  -webkit-backdrop-filter: var(--blur);
+  -webkit-app-region: no-drag;
+  /* Grows from its trigger (transitions.dev menu-dropdown recipe): slight
+     scale + drift from the anchored corner, the house pop ease. */
+  animation: popover-in var(--dur-open) var(--ease-pop) both;
+  transform-origin: top left;
+  cursor: default;
+}
+.popover--right {
+  left: auto;
+  right: 0;
+  transform-origin: top right;
+}
+.popover--up {
+  top: auto;
+  bottom: calc(100% + 8px);
+  --pop-shift: 3px;
+  transform-origin: bottom left;
+}
+.popover--up.popover--right {
+  transform-origin: bottom right;
+}
+@keyframes popover-in {
+  from {
+    opacity: 0;
+    transform: scale(0.97) translateY(var(--pop-shift, -3px));
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .popover { animation-duration: 0.01ms; }
+}
+
+/* Tracked micro-label dividing popover groups (Overlays / Snapping / …) */
+.popover__section {
+  font-size: 0.64rem;
+  font-weight: 650;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  padding-top: 10px;
+  margin-top: 6px;
+  border-top: 1px solid var(--border-strong);
+}
+.popover__section:first-child {
+  padding-top: 0;
+  margin-top: 0;
+  border-top: none;
+}
+
+/* ================================================================
+   FORMAT CHIP — the header's one-document-decision control
+   ================================================================ */
+
+.app__format-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  /* One shared header-control height (toqe's tier rule) — matches .btn's
+     30px so the chip row reads as a single line. Same quiet-tint voice as
+     .btn: the fill is the affordance, no border, no shadow. */
+  height: 30px;
+  padding: 0 13px;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: color-mix(in srgb, var(--ink) 5%, transparent);
+  color: var(--text);
+  font-size: 0.78rem;
+  font-family: inherit;
+  cursor: pointer;
+  transition:
+    background var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease);
+}
+.app__format-chip:hover {
+  background: color-mix(in srgb, var(--ink) 9%, transparent);
+  color: var(--text-bright);
+}
+.app__format-chip b {
+  font-weight: 650;
+  color: var(--text-bright);
+}
+.app__format-dims {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 0.75rem;
+  color: var(--text-dim);
+}
+.app__chev {
+  font-size: 0.6rem;
+  opacity: 0.55;
+  line-height: 1;
+}
+
+/* ================================================================
+   TOOL RAIL — 48px insert rail; the canvas is the navigator
+   ================================================================ */
+
+/* Floating glass toolbar on the canvas's left edge — same recipe as the
+   selection toolbar and layer stacks (glass = floating chrome). */
+.canvas-tools {
+  position: absolute;
+  left: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 12;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px;
+  border: 1px solid color-mix(in srgb, var(--ink) 7.5%, transparent);
+  border-radius: var(--r-md);
+  background: color-mix(in srgb, var(--glass-tint) 88%, transparent);
+  /* Same quiet shadow as the zoom pill — 12px from the canvas edge, a big
+     one would clip against the host boundary. */
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18), inset 0 1px 0 color-mix(in srgb, var(--ink) 4%, transparent);
+  backdrop-filter: blur(14px) saturate(1.18);
+  -webkit-backdrop-filter: blur(14px) saturate(1.18);
+  animation: canvas-tools-in 400ms var(--ease) 120ms backwards;
+}
+@keyframes canvas-tools-in {
+  from { opacity: 0; transform: translateY(-50%) translateX(-10px); }
+  to   { opacity: 1; transform: translateY(-50%); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .canvas-tools { animation: none; }
+}
+.toolrail__btn {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid transparent;
+  /* Borderless rounded square — same voice as the header .hdr-icon. */
+  border-radius: var(--r);
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  transition:
+    background var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease);
+}
+.toolrail__btn:hover {
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
+  color: var(--text-bright);
+}
+.toolrail__btn:active {
+  transform: var(--press);
+}
+.toolrail__btn--active {
+  background: var(--hot-veil);
+  border-color: color-mix(in srgb, var(--hot) 35%, transparent);
+  color: var(--hot-hi);
+}
+.toolrail__btn svg {
+  width: 16px;
+  height: 16px;
+}
+
+/* ================================================================
+   VIEW CLUSTER — Preview toggle + View popover, now header options
+   (they set how the canvas is displayed, not what's in the document).
+   ================================================================ */
+
+.app__view-cluster {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+/* The View popover holds sliders + a section per concern — taller than
+   other header popovers, so it scrolls within the window. */
+.app__view-cluster .popover {
+  max-height: min(70vh, 560px);
+  overflow-y: auto;
+}
+
+/* ================================================================
+   THEME PASS POLISH — metadata typeface + tactile motion
+   ================================================================ */
+
+/* Chrome metadata voice: panel headings, menus, pills, labels */
+.collapsible summary h2,
+.menubar,
+.artboard-label,
+.toast,
+.confirm__title {
+  font-family: var(--meta);
+}
+
+/* Tactile press on chrome buttons (.btn already presses at 0.97) */
+.menubar__btn:active,
+.app__aspect-lock:active,
+.confirm__btn:active,
+.toast__close:active {
+  transform: var(--press);
+}
+
+/* ================================================================
+   EDITORIAL VOICE — Swiss typographic hierarchy. Two real sizes:
+   the project name (large, tight, bright) and everything else.
+   Section headings are tracked uppercase micro-labels hanging from
+   their hairline rules — weight and space differentiate, never a
+   second typeface. Overrides the earlier --meta assignment on
+   panel headings (later in the cascade).
+   ================================================================ */
+
+.collapsible summary h2,
+.selection-panel h2 {
+  /* Explicit flex here — the base flex+gap only targeted .app__sidebar h2,
+     so left-nav headings had their icon glued to the text and sitting off
+     the label's optical baseline. */
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--meta);
+  font-variation-settings: 'wght' 640;
+  font-size: 0.64rem;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--text-dim);
+}
+.collapsible summary:hover h2,
+.collapsible[open] summary h2 {
+  color: var(--text);
+}
+/* Constrain panel-title icons. */
+.collapsible summary h2 svg,
+.selection-panel h2 svg {
+  width: 13px;
+  height: 13px;
+  flex-shrink: 0;
+  opacity: 0.7;
+}
+
+/* Checkmark column for toggleable menu items (View → Show CSS outlines).
+   Absolutely placed in the item's left padding so it never widens the row. */
+.menubar__item-check {
+  position: absolute;
+  left: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 0.64rem;
+  color: var(--hot-pale);
+  pointer-events: none;
+}
+
+/* ================================================================
+   DEV: View → Show CSS outlines. Outlines every region + control and
+   labels the big ones so elements can be named precisely in feedback.
+   ================================================================ */
+.app--outline-debug .app__header,
+.app--outline-debug .menubar,
+.app--outline-debug .app__main,
+.app--outline-debug .app__canvas-host,
+.app--outline-debug .app__sidebar,
+.app--outline-debug .collapsible,
+.app--outline-debug .selection-panel {
+  outline: 1px solid rgba(120, 200, 255, 0.5);
+  outline-offset: -1px;
+  position: relative;
+}
+.app--outline-debug .app__sidebar { outline-color: rgba(255, 170, 90, 0.7); }
+.app--outline-debug .app__canvas-host { outline-color: rgba(150, 240, 170, 0.6); }
+.app--outline-debug .collapsible,
+.app--outline-debug .selection-panel { outline-color: rgba(210, 150, 255, 0.6); }
+
+.app--outline-debug .app__header::before,
+.app--outline-debug .menubar::before,
+.app--outline-debug .app__main::before,
+.app--outline-debug .app__canvas-host::before,
+.app--outline-debug .app__sidebar::before,
+.app--outline-debug .collapsible::before,
+.app--outline-debug .selection-panel::before {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 9999;
+  font-family: var(--mono);
+  font-size: 9px;
+  line-height: 1.25;
+  padding: 1px 4px;
+  color: #04121f;
+  background: rgba(120, 200, 255, 0.92);
+  pointer-events: none;
+  letter-spacing: 0;
+}
+.app--outline-debug .app__header::before { content: '.app__header'; }
+.app--outline-debug .menubar::before { content: '.menubar'; }
+.app--outline-debug .app__main::before { content: '.app__main'; }
+.app--outline-debug .app__canvas-host::before { content: '.app__canvas-host'; background: rgba(150, 240, 170, 0.94); color: #04120a; }
+.app--outline-debug .app__sidebar::before { content: '.app__sidebar (inspector)'; background: rgba(255, 170, 90, 0.94); color: #1a0f04; }
+.app--outline-debug .collapsible::before { content: '.collapsible'; background: rgba(210, 150, 255, 0.94); color: #150720; }
+.app--outline-debug .selection-panel::before { content: '.selection-panel'; background: rgba(210, 150, 255, 0.94); color: #150720; }
+
+/* Controls — outline only (labelling every one would drown the canvas). */
+.app--outline-debug .btn,
+.app--outline-debug .field,
+.app--outline-debug .check,
+.app--outline-debug .slider-field,
+.app--outline-debug .app__presets,
+.app--outline-debug .color-swatch,
+.app--outline-debug .zoom-pill,
+.app--outline-debug .floating-toolbar,
+.app--outline-debug .layer-stack,
+.app--outline-debug .artboard-label {
+  outline: 1px dashed rgba(255, 120, 180, 0.5);
+  outline-offset: 1px;
+}
+
+/* ── Effects panel ── */
+.fx {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+.fx__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.fx__head h2 { margin: 0; }
+.fx__accent { margin: 4px 0 8px; }
+.fx__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 6px 0 4px;
+}
+.fx-chip {
+  padding: 3px 7px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.74rem;
+  line-height: 1.3;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
+}
+.fx-chip:hover { background: color-mix(in srgb, var(--ink) 6%, transparent); }
+.fx-chip--on {
+  border-color: currentColor;
+  background: color-mix(in srgb, currentColor 12%, transparent);
+  font-weight: 600;
+}
+.fx__hint {
+  margin: 4px 0 6px;
+  font-size: 0.7rem;
+  line-height: 1.4;
+  color: var(--text-dim);
+}
+.fx__row { border-top: 1px solid var(--border); }
+.fx__row:first-of-type { border-top: 0; }
+.fx__body { padding: 0 0 8px 2px; }

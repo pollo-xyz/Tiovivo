@@ -1,13 +1,21 @@
-import { app, BrowserWindow, ipcMain, dialog, Menu } from 'electron'
+import { app, BrowserWindow, ipcMain, dialog, Menu, nativeImage, session as electronSession } from 'electron'
 import path from 'node:path'
 import fs from 'node:fs'
 import { spawn, type ChildProcess } from 'node:child_process'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { createRequire } from 'node:module'
+import { initMcp } from './mcp'
+import { initAi } from './ai'
 
 const require = createRequire(import.meta.url)
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
+
+// Module-scope so IPC handlers can use it too. The window-set-title-overlay
+// handler used to reference a function-local isMac from here — a runtime
+// ReferenceError that silently killed every retint (the classic "black
+// window buttons on the light theme").
+const isMac = process.platform === 'darwin'
 
 // Resolve ffmpeg binary path
 function getFfmpegPath(): string {
@@ -21,6 +29,373 @@ function getFfmpegPath(): string {
     return p
   } catch {
     return 'ffmpeg' // fallback to system ffmpeg
+  }
+}
+
+/** Encoder we'll use for libx264-fallback video export — probed once and
+ *  cached. Priority depends on platform:
+ *   - macOS: h264_videotoolbox (Apple's GPU encoder) → libx264
+ *   - Windows/Linux: NVIDIA NVENC → Intel QSV → AMD AMF → libx264 */
+type EncoderName =
+  | 'h264_nvenc'
+  | 'h264_qsv'
+  | 'h264_amf'
+  | 'h264_videotoolbox'
+  | 'libx264'
+let cachedEncoder: EncoderName | null = null
+let encoderProbePromise: Promise<EncoderName> | null = null
+
+export interface EncoderDiagnostics {
+  ffmpegPath: string
+  /** Names of every h264 encoder that ffmpeg lists as compiled in. */
+  availableH264Encoders: string[]
+  /** Per-candidate probe results, in priority order, ending at the first
+   *  success (or running through all if none worked). */
+  probeAttempts: { encoder: EncoderName; exitCode: number; stderr: string }[]
+  /** Final pick. */
+  chosen: EncoderName
+}
+let cachedDiagnostics: EncoderDiagnostics | null = null
+
+/** Run ffmpeg with optional stdin bytes; captures stderr.
+ *  Resolves with {code, stderr}. */
+function runFfmpegWithStdin(
+  args: string[],
+  stdinBytes: Buffer | null,
+  timeoutMs = 10000,
+): Promise<{ code: number; stderr: string }> {
+  return new Promise((resolve) => {
+    const proc = spawn(getFfmpegPath(), args, {
+      stdio: [stdinBytes ? 'pipe' : 'ignore', 'ignore', 'pipe'],
+    })
+    let stderr = ''
+    proc.stderr?.on('data', (chunk: Buffer) => {
+      stderr += chunk.toString()
+      // Keep the tail bounded so a chatty failure doesn't balloon memory.
+      if (stderr.length > 16384) stderr = stderr.slice(-16384)
+    })
+    const t = setTimeout(() => {
+      try { proc.kill() } catch { /* ignore */ }
+      resolve({ code: 1, stderr: stderr + '\n[probe timed out]' })
+    }, timeoutMs)
+    proc.on('error', (err) => { clearTimeout(t); resolve({ code: 1, stderr: stderr + '\n' + String(err) }) })
+    proc.on('close', (code) => { clearTimeout(t); resolve({ code: code ?? 1, stderr }) })
+    if (stdinBytes) {
+      // ffmpeg may exit before consuming everything — swallow the EPIPE
+      // instead of letting it surface as an uncaught main-process error.
+      proc.stdin!.on('error', () => { /* reported via exit code */ })
+      proc.stdin!.write(stdinBytes)
+      proc.stdin!.end()
+    }
+  })
+}
+
+/** Ask ffmpeg which h264 encoders it knows about. Output looks like:
+ *      V..... libx264              libx264 H.264 / AVC / MPEG-4 AVC ...
+ *      V....D h264_nvenc           NVIDIA NVENC H.264 encoder ...
+ *  We grep for the codec names we care about on stdout. */
+async function listAvailableH264EncodersFromStdout(): Promise<string[]> {
+  return new Promise((resolve) => {
+    const proc = spawn(getFfmpegPath(), ['-hide_banner', '-encoders'], {
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })
+    let stdout = ''
+    proc.stdout?.on('data', (chunk: Buffer) => { stdout += chunk.toString() })
+    proc.on('error', () => resolve([]))
+    proc.on('close', () => {
+      const wanted = ['libx264', 'h264_nvenc', 'h264_qsv', 'h264_amf', 'h264_videotoolbox']
+      resolve(wanted.filter((name) => stdout.includes(name)))
+    })
+  })
+}
+
+/** Try each hardware encoder by piping real rgba frames through it — exactly
+ *  the path the live exporter uses. lavfi/`color` inputs are already YUV and
+ *  hide rgba→yuv conversion failures, so we feed actual rgba bytes here.
+ *  First encoder that exits zero is what we use. Falls back to libx264. */
+async function probeEncoder(): Promise<EncoderName> {
+  if (cachedEncoder) return cachedEncoder
+  if (encoderProbePromise) return encoderProbePromise
+  encoderProbePromise = (async () => {
+    const diagnostics: EncoderDiagnostics = {
+      ffmpegPath: getFfmpegPath(),
+      availableH264Encoders: [],
+      probeAttempts: [],
+      chosen: 'libx264',
+    }
+    console.log(`[ffmpeg] binary path: ${diagnostics.ffmpegPath}`)
+
+    // List which h264 encoders are even compiled into this ffmpeg build.
+    // If h264_nvenc isn't here, ffmpeg-static doesn't ship the NVENC wrapper
+    // for this build — we know to skip NVENC immediately.
+    try {
+      diagnostics.availableH264Encoders = await listAvailableH264EncodersFromStdout()
+      console.log('[ffmpeg] compiled h264 encoders:', diagnostics.availableH264Encoders.join(', ') || '(none detected)')
+    } catch (err) {
+      console.log('[ffmpeg] failed to list encoders:', err)
+    }
+
+    const PROBE_W = 256, PROBE_H = 256, PROBE_FRAMES = 3
+    // 3 frames of opaque black rgba. Tiny enough to be fast (~750 KB total),
+    // big enough to exercise the rgba→yuv420p / nv12 conversion path that
+    // hardware encoders typically use.
+    const frame = Buffer.alloc(PROBE_W * PROBE_H * 4)
+    for (let i = 0; i < frame.length; i += 4) {
+      frame[i] = 0; frame[i + 1] = 0; frame[i + 2] = 0; frame[i + 3] = 255
+    }
+    const stdin = Buffer.concat([frame, frame, frame])
+
+    // Platform-aware candidate order: each OS has at most one HW encoder
+    // that's actually usable. NVENC/QSV/AMF only exist on Win/Linux;
+    // videotoolbox is macOS-only. Probing irrelevant ones just wastes
+    // ~50-200ms apiece.
+    const candidates: EncoderName[] = process.platform === 'darwin'
+      ? ['h264_videotoolbox']
+      : ['h264_nvenc', 'h264_qsv', 'h264_amf']
+    for (const enc of candidates) {
+      // Skip candidates that aren't even compiled in — saves a 10s timeout.
+      if (
+        diagnostics.availableH264Encoders.length > 0 &&
+        !diagnostics.availableH264Encoders.includes(enc)
+      ) {
+        console.log(`[ffmpeg] ${enc} not compiled into this ffmpeg build — skipping`)
+        diagnostics.probeAttempts.push({
+          encoder: enc,
+          exitCode: -1,
+          stderr: 'encoder not compiled into ffmpeg-static build',
+        })
+        continue
+      }
+      const { code, stderr } = await runFfmpegWithStdin([
+        '-y',
+        '-f', 'rawvideo',
+        '-pixel_format', 'rgba',
+        '-video_size', `${PROBE_W}x${PROBE_H}`,
+        '-framerate', '30',
+        '-i', 'pipe:0',
+        ...encoderArgs(enc),
+        '-frames:v', String(PROBE_FRAMES),
+        '-f', 'null', '-',
+      ], stdin)
+      diagnostics.probeAttempts.push({ encoder: enc, exitCode: code, stderr })
+      if (code === 0) {
+        cachedEncoder = enc
+        diagnostics.chosen = enc
+        cachedDiagnostics = diagnostics
+        console.log(`[ffmpeg] hardware encoder available: ${enc}`)
+        return enc
+      }
+      // Log the last ~800 chars of stderr — that's where the actual error
+      // line lives (e.g. "Cannot load nvcuda.dll", "No NVENC capable devices
+      // found", "h264_qsv: Failed to load MFX (mfxLoad)").
+      console.log(
+        `[ffmpeg] encoder ${enc} failed probe (exit ${code}); trying next` +
+        (stderr ? `\n  --- last stderr ---\n  ${stderr.slice(-800).replace(/\n/g, '\n  ')}` : ''),
+      )
+    }
+    cachedEncoder = 'libx264'
+    diagnostics.chosen = 'libx264'
+    cachedDiagnostics = diagnostics
+    console.log('[ffmpeg] no GPU encoder available — using libx264')
+    return 'libx264'
+  })()
+  return encoderProbePromise
+}
+
+/** Expose probe diagnostics to the renderer so the user can see them via
+ *  View → Toggle Developer Tools without needing to launch from a terminal. */
+// Renderer (the in-app MenuBar on Windows/Linux) reads the recent-files
+// list, asks main to open one, or clears the list. macOS uses its native
+// menu bar so these are no-ops on that platform.
+ipcMain.handle('get-recents', async (): Promise<string[]> => readRecents())
+/** Pull `preview.png` out of a .vpost without reading the whole file (a
+ *  project with video can be hundreds of MB). The archive is STORE-only zip
+ *  written by src/lib/zip.ts: read the directory at the tail, then just the
+ *  one entry. Null when there's no preview or the file isn't readable. */
+async function readVpostPreview(filePath: string): Promise<Uint8Array | null> {
+  let fh: fs.promises.FileHandle | null = null
+  try {
+    fh = await fs.promises.open(filePath, 'r')
+    const { size } = await fh.stat()
+    const tailLen = Math.min(size, 65557)
+    const tail = Buffer.alloc(tailLen)
+    await fh.read(tail, 0, tailLen, size - tailLen)
+    let eocd = -1
+    for (let i = tailLen - 22; i >= 0; i--) {
+      if (tail.readUInt32LE(i) === 0x06054b50) { eocd = i; break }
+    }
+    if (eocd < 0) return null
+    const count = tail.readUInt16LE(eocd + 10)
+    const cdSize = tail.readUInt32LE(eocd + 12)
+    const cdOffset = tail.readUInt32LE(eocd + 16)
+    if (cdOffset === 0xffffffff || cdSize > 4 * 1024 * 1024) return null
+    const cd = Buffer.alloc(cdSize)
+    await fh.read(cd, 0, cdSize, cdOffset)
+    let p = 0
+    for (let i = 0; i < count && p + 46 <= cd.length; i++) {
+      if (cd.readUInt32LE(p) !== 0x02014b50) return null
+      const method = cd.readUInt16LE(p + 10)
+      const dataSize = cd.readUInt32LE(p + 24)
+      const nameLen = cd.readUInt16LE(p + 28)
+      const extraLen = cd.readUInt16LE(p + 30)
+      const commentLen = cd.readUInt16LE(p + 32)
+      const localOffset = cd.readUInt32LE(p + 42)
+      const name = cd.toString('utf8', p + 46, p + 46 + nameLen)
+      if (name === 'preview.png') {
+        if (method !== 0 || dataSize === 0 || dataSize > 8 * 1024 * 1024) return null
+        const lfh = Buffer.alloc(30)
+        await fh.read(lfh, 0, 30, localOffset)
+        if (lfh.readUInt32LE(0) !== 0x04034b50) return null
+        const start = localOffset + 30 + lfh.readUInt16LE(26) + lfh.readUInt16LE(28)
+        const data = Buffer.alloc(dataSize)
+        await fh.read(data, 0, dataSize, start)
+        return new Uint8Array(data)
+      }
+      p += 46 + nameLen + extraLen + commentLen
+    }
+    return null
+  } catch {
+    return null
+  } finally {
+    await fh?.close().catch(() => {})
+  }
+}
+
+// Recents with what the start screen shows for each: when it was last
+// saved and its embedded preview. Files that have gone missing are skipped.
+ipcMain.handle('get-recent-details', async () => {
+  const out: { path: string; modified: number; preview: Uint8Array | null }[] = []
+  for (const p of readRecents()) {
+    try {
+      const stat = await fs.promises.stat(p)
+      out.push({ path: p, modified: stat.mtimeMs, preview: await readVpostPreview(p) })
+    } catch {
+      /* moved or deleted — openRecent prunes it if the user tries */
+    }
+  }
+  return out
+})
+ipcMain.handle('open-recent', async (_event, filePath: string) => {
+  // Only entries main itself put on the list — not arbitrary paths.
+  if (typeof filePath !== 'string' || !readRecents().includes(filePath)) return
+  openRecent(filePath)
+})
+ipcMain.handle('clear-recents', async () => {
+  writeRecents([])
+  buildMenu()
+})
+
+// Window control IPC for the in-app title bar (Windows / Linux).
+ipcMain.handle('window-minimize', async () => {
+  BrowserWindow.getFocusedWindow()?.minimize()
+})
+ipcMain.handle('window-maximize-toggle', async () => {
+  const w = BrowserWindow.getFocusedWindow()
+  if (!w) return
+  if (w.isMaximized()) w.unmaximize()
+  else w.maximize()
+})
+ipcMain.handle('window-close', async () => {
+  BrowserWindow.getFocusedWindow()?.close()
+})
+
+// Retint the native window-control overlay (min/max/close) to match the app
+// theme. No-op on macOS (native traffic lights auto-theme) and if the window
+// wasn't created with a titleBarOverlay. The colors are also persisted so the
+// NEXT launch creates the window already themed — without this, a light-theme
+// user gets a black button corner until the renderer's retint IPC lands.
+ipcMain.handle('window-set-title-overlay', async (_e, colors: { color: string; symbolColor: string }) => {
+  if (isMac) return
+  writeOverlayColors(colors)
+  const w = BrowserWindow.getFocusedWindow() ?? win
+  try {
+    w?.setTitleBarOverlay?.({ color: colors.color, symbolColor: colors.symbolColor, height: 55 })
+  } catch {
+    /* overlay not available on this platform/window */
+  }
+})
+
+/* Persisted overlay colors — written on every theme change, read at window
+ * creation so the min/max/close corner never flashes the wrong theme. */
+const overlayColorsPath = () => path.join(app.getPath('userData'), 'title-overlay.json')
+
+function readOverlayColors(): { color: string; symbolColor: string } {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(overlayColorsPath(), 'utf8'))
+    if (typeof parsed?.color === 'string' && typeof parsed?.symbolColor === 'string') {
+      return { color: parsed.color, symbolColor: parsed.symbolColor }
+    }
+  } catch {
+    /* first launch or corrupt file — fall through to the Onyx default */
+  }
+  return { color: '#151514', symbolColor: '#f2f1ee' }
+}
+
+function writeOverlayColors(colors: { color: string; symbolColor: string }) {
+  try {
+    fs.writeFileSync(overlayColorsPath(), JSON.stringify(colors))
+  } catch {
+    /* best-effort */
+  }
+}
+
+ipcMain.handle('get-encoder-diagnostics', async (): Promise<EncoderDiagnostics | null> => {
+  // Ensure the probe has completed (or run it now if it somehow hasn't).
+  await probeEncoder()
+  return cachedDiagnostics
+})
+
+/** Build ffmpeg args tail (codec + quality flags) for the chosen encoder. */
+function encoderArgs(enc: EncoderName): string[] {
+  switch (enc) {
+    case 'h264_nvenc':
+      // p4 is the "medium-ish" NVENC preset (quality/speed balance).
+      // -cq is constant-quality (CRF-equivalent) for VBR.
+      return [
+        '-c:v', 'h264_nvenc',
+        '-preset', 'p4',
+        '-rc', 'vbr',
+        '-cq', '20',
+        '-pix_fmt', 'yuv420p',
+      ]
+    case 'h264_qsv':
+      // Intel QSV. nv12 is its native pixel format — ffmpeg auto-converts.
+      return [
+        '-c:v', 'h264_qsv',
+        '-preset', 'veryfast',
+        '-global_quality', '23',
+        '-pix_fmt', 'nv12',
+      ]
+    case 'h264_amf':
+      return [
+        '-c:v', 'h264_amf',
+        '-quality', 'speed',
+        '-rc', 'cqp',
+        '-qp_i', '20',
+        '-qp_p', '22',
+        '-pix_fmt', 'yuv420p',
+      ]
+    case 'h264_videotoolbox':
+      // Apple's hardware encoder. Bitrate-based for cross-version compat
+      // (constant-quality on videotoolbox is macOS 10.15+ only, and the
+      // exact -q:v scale shifted around). 8 Mbps at typical slide sizes
+      // (1080×1350) is visually high-quality without being huge.
+      return [
+        '-c:v', 'h264_videotoolbox',
+        '-b:v', '8M',
+        '-profile:v', 'high',
+        '-pix_fmt', 'yuv420p',
+      ]
+    case 'libx264':
+    default:
+      // superfast was chosen over fast: ~2× faster, +10–25% file size at
+      // the same CRF. CRF bumped from 18 → 20 to claw most of that back.
+      return [
+        '-c:v', 'libx264',
+        '-preset', 'superfast',
+        '-crf', '20',
+        '-pix_fmt', 'yuv420p',
+      ]
   }
 }
 
@@ -38,6 +413,30 @@ process.env.VITE_PUBLIC = app.isPackaged
 let win: BrowserWindow | null = null
 const VITE_DEV_SERVER_URL = process.env['VITE_DEV_SERVER_URL']
 
+/* Paths the USER chose this session (save/open dialogs, Finder/Explorer
+ * opens, Recent) and directories they picked. Write IPCs only accept these,
+ * so a compromised renderer can't scribble anywhere on disk. */
+const knownFiles = new Set<string>()
+const knownDirs = new Set<string>()
+const normPath = (p: string) => path.resolve(p)
+function rememberFile(p: string) { knownFiles.add(normPath(p)) }
+function isKnownFile(p: string) { return knownFiles.has(normPath(p)) }
+function isInKnownDir(p: string) { return knownDirs.has(path.dirname(normPath(p))) }
+
+/** Replace a file without ever leaving it half-written: write a sibling temp
+ *  file, then rename over the target. A full disk or crash mid-save used to
+ *  truncate the user's only copy of the project. */
+async function writeFileAtomic(target: string, data: Buffer) {
+  const tmp = `${target}.${process.pid}.tmp`
+  try {
+    await fs.promises.writeFile(tmp, data)
+    await fs.promises.rename(tmp, target)
+  } catch (err) {
+    await fs.promises.rm(tmp, { force: true }).catch(() => {})
+    throw err
+  }
+}
+
 // Pending file path to open once the renderer is ready (Finder double-click,
 // "Open With", or argv-on-launch). On macOS the open-file event can fire
 // before app.whenReady(), so we queue here and flush after window load.
@@ -48,10 +447,14 @@ function deliverPendingOpen() {
   if (!pendingOpenPath || !win) return
   try {
     const buffer = fs.readFileSync(pendingOpenPath)
+    rememberFile(pendingOpenPath)
     win.webContents.send('app:open-project-file', {
       path: pendingOpenPath,
       buffer: new Uint8Array(buffer),
     })
+    if (pendingOpenPath.toLowerCase().endsWith('.vpost')) {
+      pushRecent(pendingOpenPath)
+    }
     pendingOpenPath = null
   } catch (err) {
     console.error('[open-file] read failed:', err)
@@ -61,17 +464,49 @@ function deliverPendingOpen() {
 function queueOpenPath(filePath: string) {
   pendingOpenPath = filePath
   if (rendererReady) deliverPendingOpen()
+  // macOS keeps running with no window — open one; its did-finish-load
+  // delivers the queued file.
+  else if (!win && app.isReady()) createWindow()
 }
 
 function createWindow() {
+  // Runtime BrowserWindow icon — 256×256 is plenty for Windows taskbar and
+  // title bar; bundling the 2400×2400 source would waste ~5.7 MB of asar
+  // space for no visible quality gain. The high-res original is still used
+  // at build time by electron-builder (see package.json build.icon) to
+  // generate the multi-resolution .ico / .icns.
+  const iconPath = path.join(__dirname, '..', 'resources', 'tiovivo_appicon_small.png')
+  // Last theme's overlay colors, persisted by the retint IPC — the window is
+  // born already matching the user's theme instead of defaulting dark.
+  const overlay = readOverlayColors()
+  // A previous window's close flow left this true — reset it, or every later
+  // close/quit (macOS: reopen from the Dock) would skip the unsaved prompt.
+  allowClose = false
   win = new BrowserWindow({
     width: 1400,
     height: 900,
     minWidth: 900,
     minHeight: 600,
-    titleBarStyle: 'hiddenInset',
-    trafficLightPosition: { x: 16, y: 16 },
-    backgroundColor: '#0a0a0e',
+    // Mac: hiddenInset keeps the native traffic-lights but lets us draw
+    //      under them — already worked, leaving alone.
+    // Windows / Linux: 'hidden' removes the OS title bar entirely. We then
+    //      use titleBarOverlay to get themed close/min/max buttons in the
+    //      top-right; the rest of the bar is ours to paint (custom menus,
+    //      drag region).
+    titleBarStyle: isMac ? 'hiddenInset' : 'hidden',
+    // 55, not 56: the header is 56px border-box INCLUDING its 1px bottom
+    // hairline — an opaque 56px overlay would paint over the hairline in
+    // the window-buttons corner.
+    titleBarOverlay: isMac ? undefined : {
+      color: overlay.color,
+      symbolColor: overlay.symbolColor,
+      height: 55,
+    },
+    trafficLightPosition: isMac ? { x: 16, y: 16 } : undefined,
+    // Match the overlay bar so the pre-paint window doesn't flash a
+    // mismatched ground on either theme.
+    backgroundColor: overlay.color,
+    icon: iconPath,
     webPreferences: {
       preload: path.join(__dirname, 'preload.mjs'),
       contextIsolation: true,
@@ -89,10 +524,188 @@ function createWindow() {
   win.webContents.on('did-finish-load', () => {
     rendererReady = true
     deliverPendingOpen()
+    if (pendingMenuChannel) {
+      win?.webContents.send(pendingMenuChannel)
+      pendingMenuChannel = null
+    }
   })
+
+  // The renderer is a local app, never a browser: no navigating away, no
+  // popup windows (a dropped link or stray window.open would otherwise load
+  // remote content into a window that has the preload bridge).
+  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+  const appUrl = VITE_DEV_SERVER_URL
+    ?? pathToFileURL(path.join(process.env.DIST!, 'index.html')).href
+  win.webContents.on('will-navigate', (e, url) => {
+    if (!url.startsWith(appUrl)) e.preventDefault()
+  })
+
+  // Save-on-quit prompt. We intercept the window's close event, ask the
+  // renderer whether the document is dirty, and if so show a native modal
+  // with Save / Don't Save / Cancel. The renderer drives the actual save
+  // flow (it owns the serializer + path), then signals back so we know
+  // whether to proceed with closing.
+  win.on('close', async (e) => {
+    if (!win || allowClose) return // we already orchestrated; let it close
+    e.preventDefault()
+    const w = win
+    // Finish the close. Preventing a close during app.quit() cancels the
+    // quit, so if one was underway re-issue it (macOS Cmd+Q used to need a
+    // second press; Windows quit-from-taskbar likewise).
+    const proceed = () => {
+      allowClose = true
+      if (quitting) app.quit()
+      else w.close()
+    }
+    const stay = () => { quitting = false }
+    let dirty = false
+    try {
+      dirty = await new Promise<boolean>((resolve, reject) => {
+        const onResponse = (_event: Electron.IpcMainEvent, val: boolean) => {
+          ipcMain.off('app:dirty-response', onResponse)
+          clearTimeout(timer)
+          resolve(val)
+        }
+        const timer = setTimeout(() => {
+          // Renderer is hung or hasn't loaded — fall through to closing.
+          ipcMain.off('app:dirty-response', onResponse)
+          reject(new Error('dirty-query timeout'))
+        }, 1500)
+        ipcMain.on('app:dirty-response', onResponse)
+        win!.webContents.send('app:query-dirty')
+      })
+    } catch {
+      // The renderer didn't answer (hung or still loading). Ask rather than
+      // guess — silently closing could throw away unsaved work.
+      const { response } = await dialog.showMessageBox(w, {
+        type: 'warning',
+        buttons: ['Close Anyway', 'Cancel'],
+        defaultId: 1,
+        cancelId: 1,
+        title: 'Not responding',
+        message: 'Tiovivo couldn’t check for unsaved changes.',
+        detail: 'Closing now may lose recent edits.',
+        noLink: true,
+      })
+      if (response === 0) proceed()
+      else stay()
+      return
+    }
+    if (!dirty) {
+      proceed()
+      return
+    }
+    const result = await dialog.showMessageBox(w, {
+      type: 'question',
+      buttons: ['Save', "Don't Save", 'Cancel'],
+      defaultId: 0,
+      cancelId: 2,
+      title: 'Unsaved changes',
+      message: 'Save changes to your project before closing?',
+      detail: "Your changes will be lost if you don't save them.",
+      noLink: true,
+    })
+    if (result.response === 2) { stay(); return } // Cancel — keep window open
+    if (result.response === 1) {
+      proceed()
+      return
+    }
+    // Save — wait for renderer to confirm it actually wrote the file.
+    let saved = false
+    try {
+      saved = await new Promise<boolean>((resolve) => {
+        const onResult = (_event: Electron.IpcMainEvent, ok: boolean) => {
+          ipcMain.off('app:save-result', onResult)
+          resolve(ok)
+        }
+        ipcMain.on('app:save-result', onResult)
+        w.webContents.send('app:save-and-close')
+      })
+    } catch {
+      saved = false
+    }
+    if (saved) proceed()
+    else stay() // save failed or user cancelled the file picker — stay open.
+  })
+
   win.on('closed', () => {
     rendererReady = false
+    win = null
+    // A closed window can't feed frames — kill its encoders so ffmpeg
+    // doesn't sit on stdin holding a half-written MP4.
+    abortAllEncodeSessions()
   })
+}
+
+/** True from before-quit until the close flow lets the quit proceed or the
+ *  user cancels it. */
+let quitting = false
+app.on('before-quit', () => { quitting = true })
+
+/** A menu command that arrived while no window existed (macOS) — replayed
+ *  once the new window's renderer has loaded. */
+let pendingMenuChannel: string | null = null
+
+/** Set true once the close-confirmation flow has decided the window may
+ *  close — lets the next 'close' event fall through without re-prompting. */
+let allowClose = false
+
+/* ------------------------------------------------------------------ */
+/*  Recent files                                                      */
+/* ------------------------------------------------------------------ */
+
+const RECENTS_MAX = 5
+const recentsPath = () => path.join(app.getPath('userData'), 'recents.json')
+
+function readRecents(): string[] {
+  try {
+    const raw = fs.readFileSync(recentsPath(), 'utf8')
+    const parsed = JSON.parse(raw)
+    if (Array.isArray(parsed)) {
+      return parsed.filter((p): p is string => typeof p === 'string').slice(0, RECENTS_MAX)
+    }
+  } catch {
+    // Missing file or corrupt JSON — silently start fresh.
+  }
+  return []
+}
+
+function writeRecents(list: string[]) {
+  try {
+    fs.writeFileSync(recentsPath(), JSON.stringify(list.slice(0, RECENTS_MAX)))
+  } catch (err) {
+    console.warn('[recents] failed to write:', err)
+  }
+}
+
+function pushRecent(filePath: string) {
+  if (!filePath) return
+  const list = readRecents().filter((p) => p !== filePath)
+  list.unshift(filePath)
+  writeRecents(list)
+  buildMenu()
+}
+
+function openRecent(filePath: string) {
+  if (!fs.existsSync(filePath)) {
+    // File moved / deleted since it was opened. Drop from the list and
+    // tell the user; don't try to read a buffer from a path that's gone.
+    const list = readRecents().filter((p) => p !== filePath)
+    writeRecents(list)
+    buildMenu()
+    const opts: Electron.MessageBoxOptions = {
+      type: 'warning',
+      title: 'File not found',
+      message: 'That project file could not be opened.',
+      detail: `It may have been moved, renamed, or deleted:\n${filePath}\n\nIt has been removed from Recent.`,
+      buttons: ['OK'],
+      defaultId: 0,
+    }
+    if (win) void dialog.showMessageBox(win, opts)
+    else void dialog.showMessageBox(opts)
+    return
+  }
+  queueOpenPath(filePath)
 }
 
 // Build a custom app menu so Cmd/Ctrl+Z reaches our renderer instead of being
@@ -101,7 +714,14 @@ function buildMenu() {
   const isMac = process.platform === 'darwin'
   const sendToFocused = (channel: string) => {
     const w = BrowserWindow.getFocusedWindow() ?? win
-    w?.webContents.send(channel)
+    if (w && !w.isDestroyed()) {
+      w.webContents.send(channel)
+      return
+    }
+    // macOS with every window closed: open one, then replay the command
+    // (Open needs the renderer; New/Save are moot on a fresh document).
+    pendingMenuChannel = channel === 'app:open-project' ? channel : null
+    createWindow()
   }
   const template: Electron.MenuItemConstructorOptions[] = [
     ...(isMac
@@ -133,6 +753,28 @@ function buildMenu() {
           accelerator: 'CmdOrCtrl+O',
           click: () => sendToFocused('app:open-project'),
         },
+        {
+          label: 'Open Recent',
+          submenu: (() => {
+            const recents = readRecents()
+            if (recents.length === 0) {
+              return [{ label: 'No recent projects', enabled: false }]
+            }
+            const items: Electron.MenuItemConstructorOptions[] = recents.map((p) => ({
+              // Show the basename (foo.vpost) but tooltip the full path so
+              // the user can disambiguate same-name files in different folders.
+              label: path.basename(p),
+              toolTip: p,
+              click: () => openRecent(p),
+            }))
+            items.push({ type: 'separator' })
+            items.push({
+              label: 'Clear Recent',
+              click: () => { writeRecents([]); buildMenu() },
+            })
+            return items
+          })(),
+        },
         { type: 'separator' },
         {
           label: 'Save Project',
@@ -143,6 +785,11 @@ function buildMenu() {
           label: 'Save Project As…',
           accelerator: 'Shift+CmdOrCtrl+S',
           click: () => sendToFocused('app:save-project-as'),
+        },
+        { type: 'separator' },
+        {
+          label: 'Connect Claude…',
+          click: () => sendToFocused('app:open-mcp'),
         },
       ],
     },
@@ -169,7 +816,15 @@ function buildMenu() {
     { role: 'viewMenu' },
     { role: 'windowMenu' },
   ]
-  Menu.setApplicationMenu(Menu.buildFromTemplate(template))
+  // On Windows / Linux we draw our own menu bar inside the window chrome
+  // (in-app MenuBar component, see renderer). Hiding the native menu here
+  // avoids the duplicate strip. macOS keeps the system menu bar at the top
+  // of the screen — that's where Mac users expect it.
+  if (process.platform === 'darwin') {
+    Menu.setApplicationMenu(Menu.buildFromTemplate(template))
+  } else {
+    Menu.setApplicationMenu(null)
+  }
 }
 
 app.on('window-all-closed', () => {
@@ -198,11 +853,16 @@ app.on('open-file', (event, filePath) => {
 // window and pick up the new path from argv.
 const gotLock = app.requestSingleInstanceLock()
 if (!gotLock) {
-  app.quit()
+  // Exit immediately — app.quit() is async and the rest of startup (window,
+  // encoder probe, temp-dir cleanup on quit) must not run in this instance.
+  app.exit(0)
 } else {
-  app.on('second-instance', (_e, argv) => {
-    const fileArg = argv.find((a) => a.toLowerCase().endsWith('.vpost'))
-    if (fileArg) queueOpenPath(fileArg)
+  app.on('second-instance', (_e, argv, workingDirectory) => {
+    const fileArg = argv.slice(1).find((a) => a.toLowerCase().endsWith('.vpost'))
+    if (fileArg) {
+      const resolved = path.resolve(workingDirectory, fileArg)
+      if (fs.existsSync(resolved)) queueOpenPath(resolved)
+    }
     if (win) {
       if (win.isMinimized()) win.restore()
       win.focus()
@@ -210,14 +870,39 @@ if (!gotLock) {
   })
 }
 
-app.whenReady().then(() => {
+if (gotLock) app.whenReady().then(() => {
   // Cold-launch with file argument (Win/Linux; macOS uses open-file event).
   if (process.platform !== 'darwin') {
     const fileArg = process.argv.slice(1).find((a) => a.toLowerCase().endsWith('.vpost'))
     if (fileArg && fs.existsSync(fileArg)) queueOpenPath(fileArg)
   }
+  // Probe ffmpeg encoders in the background so the first video export
+  // doesn't pay the ~150–500ms detection cost. Result is cached.
+  void probeEncoder()
+  // Auto-grant Local Font Access so the text tool can list installed fonts.
+  // queryLocalFonts() is gated by a permission; we trust ourselves.
+  // We register both handlers: some Chromium code paths check before requesting
+  // and skip the request entirely if the check returns false.
+  electronSession.defaultSession.setPermissionRequestHandler((_wc, permission, callback) => {
+    // 'local-fonts' is a real Chromium permission missing from Electron's typings.
+    if ((permission as string) === 'local-fonts') return callback(true)
+    callback(false)
+  })
+  electronSession.defaultSession.setPermissionCheckHandler((_wc, permission) => {
+    if ((permission as string) === 'local-fonts') return true
+    return false
+  })
   buildMenu()
   createWindow()
+  // Built-in MCP server (off until the user enables it in File → Connect
+  // Claude). Its writes go through the same chosen-path allow-list.
+  const mcp = initMcp({
+    getWindow: () => win,
+    allowFile: rememberFile,
+    allowDir: (p) => { knownDirs.add(normPath(p)) },
+  })
+  // In-app assistant: Claude on the same document tools, key kept in main.
+  initAi({ getWindow: () => win, runTool: mcp.runTool })
 })
 
 /* ------------------------------------------------------------------ */
@@ -226,26 +911,43 @@ app.whenReady().then(() => {
 
 // Save a single file with a save dialog. When `buffer` is omitted, the caller
 // just wants the chosen path back (e.g. ffmpeg writes the file itself).
-ipcMain.handle('save-file', async (_event, options: {
+/** The window that sent an IPC — dialogs parent to it so they're modal
+ *  (an unparented dialog let the user keep editing mid-save). */
+const senderWindow = (e: Electron.IpcMainInvokeEvent) => BrowserWindow.fromWebContents(e.sender)
+
+ipcMain.handle('save-file', async (event, options: {
   defaultName: string
   filters: { name: string; extensions: string[] }[]
   buffer?: Uint8Array
 }) => {
-  const result = await dialog.showSaveDialog({
+  const parent = senderWindow(event)
+  const dlgOpts: Electron.SaveDialogOptions = {
     defaultPath: options.defaultName,
     filters: options.filters,
-  })
+  }
+  const result = parent
+    ? await dialog.showSaveDialog(parent, dlgOpts)
+    : await dialog.showSaveDialog(dlgOpts)
   if (result.canceled || !result.filePath) return null
-  if (options.buffer) fs.writeFileSync(result.filePath, Buffer.from(options.buffer))
+  rememberFile(result.filePath)
+  if (options.buffer) await writeFileAtomic(result.filePath, Buffer.from(options.buffer))
+  // Treat .vpost saves as recent. PNG/MP4 exports aren't projects so they
+  // shouldn't pollute the list.
+  if (result.filePath.toLowerCase().endsWith('.vpost')) pushRecent(result.filePath)
   return result.filePath
 })
 
 // Pick a directory
-ipcMain.handle('pick-directory', async () => {
-  const result = await dialog.showOpenDialog({
+ipcMain.handle('pick-directory', async (event) => {
+  const parent = senderWindow(event)
+  const dlgOpts: Electron.OpenDialogOptions = {
     properties: ['openDirectory', 'createDirectory'],
-  })
+  }
+  const result = parent
+    ? await dialog.showOpenDialog(parent, dlgOpts)
+    : await dialog.showOpenDialog(dlgOpts)
   if (result.canceled || !result.filePaths.length) return null
+  knownDirs.add(normPath(result.filePaths[0]!))
   return result.filePaths[0]
 })
 
@@ -254,24 +956,34 @@ ipcMain.handle('save-files-to-dir', async (_event, options: {
   dirPath: string
   files: { name: string; buffer: Uint8Array }[]
 }) => {
+  if (!knownDirs.has(normPath(options.dirPath))) {
+    throw new Error('Export folder was not chosen in this session')
+  }
   for (const file of options.files) {
-    const filePath = path.join(options.dirPath, file.name)
-    fs.writeFileSync(filePath, Buffer.from(file.buffer))
+    // Names come from the renderer: keep them a plain file inside the dir.
+    const filePath = path.join(options.dirPath, safeFilename(path.basename(file.name)))
+    await writeFileAtomic(filePath, Buffer.from(file.buffer))
   }
   return options.files.length
 })
 
 // Open a single file with an open dialog
-ipcMain.handle('open-file', async (_event, options: {
+ipcMain.handle('open-file', async (event, options: {
   filters: { name: string; extensions: string[] }[]
 }) => {
-  const result = await dialog.showOpenDialog({
+  const parent = senderWindow(event)
+  const dlgOpts: Electron.OpenDialogOptions = {
     properties: ['openFile'],
     filters: options.filters,
-  })
+  }
+  const result = parent
+    ? await dialog.showOpenDialog(parent, dlgOpts)
+    : await dialog.showOpenDialog(dlgOpts)
   if (result.canceled || !result.filePaths.length) return null
   const filePath = result.filePaths[0]!
-  const buffer = fs.readFileSync(filePath)
+  const buffer = await fs.promises.readFile(filePath)
+  rememberFile(filePath)
+  if (filePath.toLowerCase().endsWith('.vpost')) pushRecent(filePath)
   return { path: filePath, buffer: new Uint8Array(buffer) }
 })
 
@@ -280,8 +992,75 @@ ipcMain.handle('write-file', async (_event, options: {
   path: string
   buffer: Uint8Array
 }) => {
-  fs.writeFileSync(options.path, Buffer.from(options.buffer))
+  // Only re-save files the user opened or chose in a dialog this session.
+  if (!isKnownFile(options.path)) throw new Error('Refusing to write a path that was not chosen by the user')
+  await writeFileAtomic(options.path, Buffer.from(options.buffer))
+  if (options.path.toLowerCase().endsWith('.vpost')) pushRecent(options.path)
   return options.path
+})
+
+/* ------------------------------------------------------------------ */
+/*  Drag-out export                                                    */
+/* ------------------------------------------------------------------ */
+/* Renderer renders the slide to PNG bytes and asks main to (a) park   */
+/* the bytes in a temp file and (b) invoke webContents.startDrag with  */
+/* that file. Two-step because webContents.startDrag must be called    */
+/* synchronously inside the renderer's dragstart event, but the bytes  */
+/* must already exist on disk before the OS-level drag begins.         */
+
+const dragTempDir = path.join(app.getPath('temp'), 'tiovivo-drag', String(process.pid))
+try { fs.mkdirSync(dragTempDir, { recursive: true }) } catch { /* exists */ }
+
+// Drop any files in our drag temp dir on quit so we don't leave clutter
+// across sessions. Failures are best-effort.
+// will-quit, not before-quit: the latter also fires for a quit the user
+// then cancels at the unsaved-changes prompt, and the app keeps running.
+app.on('will-quit', () => {
+  try { fs.rmSync(dragTempDir, { recursive: true, force: true }) } catch { /* best-effort */ }
+  abortAllEncodeSessions()
+})
+
+// Sanitize a filename for cross-platform safety. Reused logic from the
+// renderer (kept here too so main never trusts a renderer-built path).
+function safeFilename(name: string): string {
+  return name.replace(/[\\/:*?"<>|]/g, '_').replace(/[. ]+$/g, '').slice(0, 120) || 'slide'
+}
+
+ipcMain.handle('slide-drag:prepare', async (_event, options: {
+  filename: string
+  buffer: Uint8Array
+}) => {
+  // Park the bytes in a unique per-call file so two quick drags don't clobber
+  // each other before either has reached its destination.
+  const safe = safeFilename(options.filename)
+  const stamp = Date.now().toString(36) + Math.random().toString(36).slice(2, 6)
+  const fp = path.join(dragTempDir, `${stamp}-${safe}`)
+  await fs.promises.mkdir(dragTempDir, { recursive: true })
+  await fs.promises.writeFile(fp, Buffer.from(options.buffer))
+  return fp
+})
+
+ipcMain.on('slide-drag:start', (event, options: {
+  filePath: string
+  iconDataUrl: string
+}) => {
+  // Only files this process parked for dragging.
+  if (path.dirname(normPath(options.filePath)) !== normPath(dragTempDir)) return
+  // Electron requires a non-empty NativeImage (macOS refuses an empty one,
+  // silently cancelling the drag). Undecodable data falls back to a
+  // thumbnail of the file itself.
+  let icon = nativeImage.createFromDataURL(options.iconDataUrl)
+  if (icon.isEmpty()) {
+    icon = nativeImage.createFromPath(options.filePath).resize({ width: 128 })
+  }
+  try {
+    event.sender.startDrag({
+      file: options.filePath,
+      icon,
+    })
+  } catch (err) {
+    console.error('[slide-drag] startDrag failed:', err)
+  }
 })
 
 /* ------------------------------------------------------------------ */
@@ -292,9 +1071,23 @@ interface EncodeSession {
   proc: ChildProcess
   outputPath: string
   promise: Promise<string>
+  encoder: EncoderName
+  /** Set when ffmpeg exits before stdin.end() was called — i.e. it crashed.
+   *  The renderer is notified so its pending videoFrame promises can reject. */
+  crashed: boolean
+  /** Tail of stderr — surfaced in error messages and used to diagnose. */
+  stderr: string
+  /** True after endVideoEncode closes stdin; subsequent proc.close is
+   *  expected and shouldn't be treated as a crash. */
+  ended: boolean
 }
 
 const encodeSessions = new Map<string, EncodeSession>()
+
+function notifySessionFailed(sessionId: string, code: number | null, stderr: string) {
+  const w = BrowserWindow.getAllWindows()[0]
+  w?.webContents.send('app:session-failed', { sessionId, code, stderr })
+}
 
 // Start a video encoding session — ffmpeg reads raw RGBA frames from stdin
 ipcMain.handle('start-video-encode', async (_event, options: {
@@ -307,7 +1100,11 @@ ipcMain.handle('start-video-encode', async (_event, options: {
 }) => {
   const ffmpeg = getFfmpegPath()
   const { sessionId, width, height, fps, outputPath } = options
+  if (!isKnownFile(outputPath) && !isInKnownDir(outputPath)) {
+    throw new Error('Refusing to encode to a path that was not chosen by the user')
+  }
 
+  const encoder = await probeEncoder()
   const proc = spawn(ffmpeg, [
     '-y',
     '-f', 'rawvideo',
@@ -315,43 +1112,118 @@ ipcMain.handle('start-video-encode', async (_event, options: {
     '-video_size', `${width}x${height}`,
     '-framerate', String(fps),
     '-i', 'pipe:0',
-    '-c:v', 'libx264',
-    '-pix_fmt', 'yuv420p',
-    '-preset', 'fast',
-    '-crf', '18',
+    // yuv420p (every H.264 encoder here) needs even dimensions — an odd
+    // custom size (e.g. 1081×1350) made ffmpeg bail on the first frame.
+    // Trim the odd pixel; a no-op for even sizes.
+    '-vf', 'crop=trunc(iw/2)*2:trunc(ih/2)*2:0:0',
+    ...encoderArgs(encoder),
     '-movflags', '+faststart',
-    outputPath,
+    // Absolute path: a value starting with '-' can't be read as an option.
+    path.resolve(outputPath),
   ], { stdio: ['pipe', 'pipe', 'pipe'] })
+  // Frames written after ffmpeg exits fail with EPIPE/EOF — that's reported
+  // through the session's close handler, not as an uncaught exception.
+  proc.stdin?.on('error', () => { /* handled via 'close' */ })
 
-  let stderr = ''
-  proc.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString() })
+  const session: EncodeSession = {
+    proc,
+    outputPath,
+    encoder,
+    crashed: false,
+    ended: false,
+    stderr: '',
+    promise: null as unknown as Promise<string>,
+  }
+  encodeSessions.set(sessionId, session)
 
-  const promise = new Promise<string>((resolve, reject) => {
+  // Live-forward ffmpeg stderr so a hang is no longer silent — devs can see
+  // the actual error in the main-process console. We keep a tail for the
+  // reject() message too.
+  proc.stderr?.on('data', (chunk: Buffer) => {
+    const s = chunk.toString()
+    session.stderr += s
+    // Cap the stored stderr so a chatty ffmpeg doesn't balloon memory over
+    // a long export. Keep the last ~8 KB which is plenty for diagnostics.
+    if (session.stderr.length > 8192) {
+      session.stderr = session.stderr.slice(-8192)
+    }
+    console.log(`[ffmpeg:${sessionId.slice(0, 8)}] ${s.trimEnd()}`)
+  })
+
+  session.promise = new Promise<string>((resolve, reject) => {
     proc.on('close', (code) => {
       encodeSessions.delete(sessionId)
+      const crashed = !session.ended && code !== 0
+      if (crashed) {
+        session.crashed = true
+        // If a hardware encoder crashed before we even called end(), it's
+        // not actually working at runtime. Demote so the next slide retries
+        // with libx264 automatically.
+        if (session.encoder !== 'libx264') {
+          console.warn(`[ffmpeg] ${session.encoder} crashed mid-stream — falling back to libx264 for remaining slides`)
+          cachedEncoder = 'libx264'
+        }
+        // Surface the failure to the renderer so its pending videoFrame
+        // promises reject instead of hanging on an ack that won't come.
+        notifySessionFailed(sessionId, code, session.stderr)
+      }
       if (code === 0) resolve(outputPath)
-      else reject(new Error(`ffmpeg exited with code ${code}: ${stderr}`))
+      else reject(new Error(`ffmpeg exited with code ${code}: ${session.stderr}`))
     })
     proc.on('error', (err) => {
       encodeSessions.delete(sessionId)
+      session.crashed = true
+      notifySessionFailed(sessionId, -1, String(err))
       reject(err)
     })
   })
+  // Nobody awaits the promise until end-video-encode — a crash before then
+  // would otherwise be an unhandled rejection.
+  session.promise.catch(() => {})
 
-  encodeSessions.set(sessionId, { proc, outputPath, promise })
-  return { ok: true }
+  return { ok: true, encoder }
 })
 
-// Send a raw RGBA frame to the ffmpeg process
+/** Kill a session's ffmpeg and delete its partial output. */
+function abortEncodeSession(sessionId: string) {
+  const session = encodeSessions.get(sessionId)
+  if (!session) return
+  encodeSessions.delete(sessionId)
+  session.ended = true // an intentional stop, not a crash
+  try { session.proc.kill() } catch { /* already gone */ }
+  session.proc.once('close', () => {
+    fs.promises.rm(session.outputPath, { force: true }).catch(() => {})
+  })
+}
+function abortAllEncodeSessions() {
+  for (const id of [...encodeSessions.keys()]) abortEncodeSession(id)
+}
+
+// Renderer gave up on an export (frame timeout, capture error, cancel):
+// stop ffmpeg instead of leaving it blocked on stdin forever.
+ipcMain.handle('abort-video-encode', async (_event, options: { sessionId: string }) => {
+  abortEncodeSession(options.sessionId)
+})
+
+// Windows/Linux have no native menu (and so no F12 / Ctrl+Shift+I
+// accelerator) — the in-app View menu toggles DevTools through this.
+ipcMain.handle('toggle-dev-tools', async (event) => {
+  event.sender.toggleDevTools()
+})
+
+// Send a raw RGBA frame to the ffmpeg process. Acks once stdin has consumed
+// the bytes so the renderer can pipeline writes with a 1-frame queue.
 ipcMain.handle('video-frame', async (_event, options: {
   sessionId: string
   frameData: Uint8Array
 }) => {
   const session = encodeSessions.get(options.sessionId)
   if (!session) throw new Error('No such encoding session')
+  if (session.crashed) throw new Error('Session has already crashed')
 
   return new Promise<void>((resolve, reject) => {
-    const ok = session.proc.stdin!.write(Buffer.from(options.frameData), (err) => {
+    const buf = Buffer.from(options.frameData)
+    const ok = session.proc.stdin!.write(buf, (err) => {
       if (err) reject(err)
       else resolve()
     })
@@ -368,37 +1240,9 @@ ipcMain.handle('end-video-encode', async (_event, options: {
   const session = encodeSessions.get(options.sessionId)
   if (!session) throw new Error('No such encoding session')
 
+  // Mark as intentionally ended so proc.close isn't treated as a crash.
+  session.ended = true
   session.proc.stdin!.end()
   const outputPath = await session.promise
   return outputPath
-})
-
-// Extract a single frame from an encoded video at a given time
-ipcMain.handle('extract-cover-frame', async (_event, options: {
-  videoPath: string
-  time: number
-  outputPath: string
-  width: number
-  height: number
-}) => {
-  const ffmpeg = getFfmpegPath()
-  const { videoPath, time, outputPath, width, height } = options
-
-  return new Promise<string>((resolve, reject) => {
-    const proc = spawn(ffmpeg, [
-      '-y',
-      '-ss', String(time),
-      '-i', videoPath,
-      '-frames:v', '1',
-      '-s', `${width}x${height}`,
-      outputPath,
-    ])
-    let stderr = ''
-    proc.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString() })
-    proc.on('close', (code) => {
-      if (code === 0) resolve(outputPath)
-      else reject(new Error(`ffmpeg frame extract failed: ${stderr}`))
-    })
-    proc.on('error', reject)
-  })
 })

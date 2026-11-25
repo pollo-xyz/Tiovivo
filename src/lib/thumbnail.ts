@@ -1,6 +1,93 @@
 import Konva from 'konva'
-import type { PlacedMedia } from '../store/useCarouselStore'
+import type { PlacedMedia, Slide } from '../store/useTiovivoStore'
 import type { Size } from './presets'
+import { renderBgVibe } from './bgVibe'
+import { plainText } from './effects'
+import { cursorPath } from './effectsCanvas'
+
+/** Give up on a video's seek after this long — Save awaits the project
+ *  preview, so a video that never fires 'seeked' must not hang it. */
+const VIDEO_FRAME_TIMEOUT_MS = 4000
+
+/** Konva.Image for a bitmap item at thumbnail scale, honouring crop and
+ *  flips exactly like the editor's MediaItemView: the crop rect (natural
+ *  px) fills the item box, and a flip is a negative scale plus an offset so
+ *  the rotation pivot stays at the item's top-left. */
+function bitmapNode(item: PlacedMedia, image: CanvasImageSource, ratio: number): Konva.Image {
+  const w = item.width * ratio
+  const h = item.height * ratio
+  const hasCrop = item.cropW > 0 && item.cropH > 0
+  return new Konva.Image({
+    image,
+    x: item.x * ratio,
+    y: item.y * ratio,
+    width: w,
+    height: h,
+    rotation: item.rotation,
+    opacity: item.opacity ?? 1,
+    ...(hasCrop ? { crop: { x: item.cropX, y: item.cropY, width: item.cropW, height: item.cropH } } : {}),
+    scaleX: item.flipX ? -1 : 1,
+    scaleY: item.flipY ? -1 : 1,
+    offsetX: item.flipX ? w : 0,
+    offsetY: item.flipY ? h : 0,
+  })
+}
+
+/** Rect / ellipse / line at thumbnail scale — same geometry as the
+ *  editor's ShapeView (x / y is the bbox top-left for every kind, which is
+ *  also the rotation pivot). Shapes have no `src`; they used to fall into
+ *  the image branch and silently never draw. */
+function shapeNode(item: PlacedMedia, ratio: number): Konva.Shape {
+  const kind = item.shapeKind ?? 'rect'
+  const w = item.width * ratio
+  const h = item.height * ratio
+  const fill = item.fillColor === 'transparent' ? undefined : (item.fillColor ?? '#ffffff')
+  const stroke = item.strokeColor || undefined
+  const strokeWidth = (item.strokeWidth ?? 0) * ratio
+  const base = { x: item.x * ratio, y: item.y * ratio, rotation: item.rotation }
+  if (kind === 'cursor') {
+    return new Konva.Shape({
+      ...base,
+      width: w,
+      height: h,
+      fill,
+      stroke,
+      strokeWidth,
+      lineJoin: 'round',
+      sceneFunc: (ctx, shape) => { cursorPath(ctx, shape.width(), shape.height()); ctx.fillStrokeShape(shape) },
+    })
+  }
+  if (kind === 'ellipse') {
+    return new Konva.Ellipse({
+      ...base,
+      radiusX: w / 2,
+      radiusY: h / 2,
+      offsetX: -w / 2,
+      offsetY: -h / 2,
+      fill,
+      stroke,
+      strokeWidth,
+    })
+  }
+  if (kind === 'line') {
+    return new Konva.Line({
+      ...base,
+      points: [0, h / 2, w, h / 2],
+      stroke: stroke || '#ffffff',
+      strokeWidth: Math.max(1, item.strokeWidth || item.height) * ratio,
+      lineCap: 'round',
+    })
+  }
+  return new Konva.Rect({
+    ...base,
+    width: w,
+    height: h,
+    fill,
+    stroke,
+    strokeWidth,
+    cornerRadius: (item.cornerRadius ?? 0) * ratio,
+  })
+}
 
 /**
  * Generate a small thumbnail data-URL for a slide by rendering its items
@@ -13,6 +100,7 @@ export async function generateThumbnail(
   dimensions: Size,
   maxThumbWidth = 120,
   maxThumbHeight = 150,
+  slide?: Pick<Slide, 'bgColor' | 'bgVibe'>,
 ): Promise<string> {
   if (dimensions.width <= 0 || dimensions.height <= 0) return ''
 
@@ -40,43 +128,131 @@ export async function generateThumbnail(
   const layer = new Konva.Layer()
   stage.add(layer)
 
-  // Background
-  layer.add(
-    new Konva.Rect({
-      x: 0,
-      y: 0,
-      width: thumbW,
-      height: thumbH,
-      fill: '#1a1a1f',
-    }),
-  )
+  // Background — vibe canvas when present, otherwise the solid color.
+  // We render the vibe at thumbnail resolution directly; the canvas is tiny
+  // (<200 px on the short side) so cost is negligible and the result matches
+  // what the slide strip will display.
+  if (slide?.bgVibe) {
+    const bgCanvas = document.createElement('canvas')
+    renderBgVibe(bgCanvas, slide.bgVibe, thumbW, thumbH)
+    layer.add(
+      new Konva.Image({
+        x: 0,
+        y: 0,
+        image: bgCanvas,
+        width: thumbW,
+        height: thumbH,
+      }),
+    )
+  } else {
+    layer.add(
+      new Konva.Rect({
+        x: 0,
+        y: 0,
+        width: thumbW,
+        height: thumbH,
+        fill: slide?.bgColor || '#1a1a1f',
+      }),
+    )
+  }
 
-  // Load and draw each media item
+  // Videos created for frame grabs — released once the stage is rasterised.
+  const videos: HTMLVideoElement[] = []
+
+  // Load each media item, then add the nodes in the ORIGINAL item order:
+  // loads finish in any order, and adding on completion scrambled z-order.
+  const nodes: (Konva.Shape | null)[] = items.map(() => null)
   const loadPromises = items.map(
-    (item) =>
+    (item, index) =>
       new Promise<void>((resolve) => {
+        const layerAdd = (node: Konva.Shape) => { nodes[index] = node }
+        if (item.type === 'shape') {
+          layerAdd(shapeNode(item, ratio))
+          resolve()
+          return
+        }
+        if (item.type === 'text') {
+          const bold = !!item.bold
+          const italic = !!item.italic
+          const fontStyle =
+            bold && italic ? 'italic bold' : bold ? 'bold' : italic ? 'italic' : 'normal'
+          // In fill mode, fit the font to the (width, height) of the box at
+          // slide-space, then scale the result by ratio so the thumbnail
+          // matches what's drawn in the editor.
+          let baseFontSize: number
+          if (item.fillMode) {
+            const measure = (size: number) => {
+              const n = new Konva.Text({
+                text: plainText(item),
+                fontFamily: item.fontFamily || 'Inter',
+                fontSize: size,
+                fontStyle,
+                lineHeight: item.lineHeight || 1.15,
+                letterSpacing: item.letterSpacing || 0,
+                width: item.width,
+                wrap: 'word',
+              })
+              const h = n.height()
+              n.destroy()
+              return h
+            }
+            let lo = 4, hi = 4000
+            for (let k = 0; k < 14; k++) {
+              const mid = (lo + hi) / 2
+              const h = measure(mid)
+              if (h <= 0 || h > item.height) hi = mid
+              else lo = mid
+            }
+            baseFontSize = Math.max(4, Math.floor(lo))
+          } else {
+            baseFontSize = item.fontSize || 64
+          }
+          layerAdd(
+            new Konva.Text({
+              x: item.x * ratio,
+              y: item.y * ratio,
+              width: item.width * ratio,
+              height: item.fillMode ? item.height * ratio : undefined,
+              rotation: item.rotation,
+              text: plainText(item),
+              fontFamily: item.fontFamily || 'Inter',
+              fontSize: Math.max(1, baseFontSize * ratio),
+              fontStyle,
+              fill: item.textColor || '#ffffff',
+              align: item.textAlign || 'left',
+              lineHeight: item.lineHeight || 1.15,
+              letterSpacing: (item.letterSpacing || 0) * ratio,
+              wrap: 'word',
+            }),
+          )
+          resolve()
+          return
+        }
         if (item.type === 'video') {
           const v = document.createElement('video')
+          videos.push(v)
           v.src = item.src
           v.muted = true
           v.preload = 'auto'
           v.currentTime = 0.1 // grab a frame slightly in
-          const onLoaded = () => {
-            layer.add(
-              new Konva.Image({
-                image: v,
-                x: item.x * ratio,
-                y: item.y * ratio,
-                width: item.width * ratio,
-                height: item.height * ratio,
-                rotation: item.rotation,
-              }),
-            )
-            v.removeEventListener('seeked', onLoaded)
+          let settled = false
+          const finish = (draw: boolean) => {
+            if (settled) return
+            settled = true
+            clearTimeout(timeout)
+            v.removeEventListener('seeked', onSeeked)
+            if (draw) layerAdd(bitmapNode(item, v, ratio))
             resolve()
           }
-          v.addEventListener('seeked', onLoaded)
-          v.addEventListener('error', () => resolve())
+          const onSeeked = () => finish(true)
+          // A seek that never completes (codec trouble, 0-length clip) must
+          // not hang Save. Draw whatever frame is decoded by then, if any.
+          const timeout = setTimeout(
+            () => finish(v.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA),
+            VIDEO_FRAME_TIMEOUT_MS,
+          )
+          v.addEventListener('seeked', onSeeked)
+          v.addEventListener('error', () => finish(false))
           // trigger load
           v.load()
           return
@@ -86,16 +262,7 @@ export async function generateThumbnail(
         const img = new window.Image()
         img.crossOrigin = 'anonymous'
         img.onload = () => {
-          layer.add(
-            new Konva.Image({
-              image: img,
-              x: item.x * ratio,
-              y: item.y * ratio,
-              width: item.width * ratio,
-              height: item.height * ratio,
-              rotation: item.rotation,
-            }),
-          )
+          layerAdd(bitmapNode(item, img, ratio))
           resolve()
         }
         img.onerror = () => resolve()
@@ -104,6 +271,7 @@ export async function generateThumbnail(
   )
 
   await Promise.all(loadPromises)
+  for (const node of nodes) if (node) layer.add(node)
   layer.batchDraw()
 
   const dataUrl = stage.toDataURL({ pixelRatio: 1 })
@@ -111,6 +279,112 @@ export async function generateThumbnail(
   // Cleanup
   stage.destroy()
   document.body.removeChild(container)
+  // Detach the sources so each thumbnail pass doesn't leave live media
+  // players around until GC (Chromium caps how many can exist).
+  for (const v of videos) {
+    v.removeAttribute('src')
+    v.load()
+  }
 
   return dataUrl
+}
+
+/**
+ * Render the project's "Fit" view — every slide side-by-side on the workspace
+ * background — and return it as a PNG Blob. Used to embed a `preview.png`
+ * inside the .vpost so file pickers (or any future "Open Recent" UI) can show
+ * what's in the file without parsing it.
+ *
+ * Returns null when there's nothing to draw or canvas encoding fails.
+ */
+export async function generateProjectPreview(
+  slides: Slide[],
+  items: PlacedMedia[],
+  dimensions: Size,
+  workspaceBgColor: string,
+): Promise<Blob | null> {
+  if (slides.length === 0 || dimensions.width <= 0 || dimensions.height <= 0) {
+    return null
+  }
+
+  // Tuned for typical preview consumers: macOS Quick Look (≤1024), Windows
+  // Explorer extra-large icons (≤256), and our future Open Recent UI
+  // (~300–400). 1600 leaves headroom for upscaling without ballooning file
+  // size (preview.png typically lands at 20–100 KB at this scale).
+  const MAX_TOTAL_W = 1600
+  const PAD = 12
+  const GAP = 12
+
+  // Start with a generous per-slide width, then shrink if the total would
+  // exceed our cap so a 20-slide project still produces a usable preview.
+  let slideW = 200
+  const overhead = PAD * 2 + GAP * Math.max(0, slides.length - 1)
+  const idealTotal = overhead + slides.length * slideW
+  if (idealTotal > MAX_TOTAL_W) {
+    slideW = Math.max(60, Math.floor((MAX_TOTAL_W - overhead) / slides.length))
+  }
+  const slideH = Math.round((slideW / dimensions.width) * dimensions.height)
+
+  // Render each slide's content at the preview resolution. generateThumbnail
+  // already handles image/video/text rendering, so we reuse it instead of
+  // duplicating the per-item drawing logic.
+  const thumbs = await Promise.all(
+    slides.map(async (s) => {
+      // Master ("show on all slides") items appear on every slide — same
+      // z-order as the canvas and the strip thumbnails: ghosts first, then
+      // the slide's own items.
+      const slideItems = [
+        ...items.filter((it) => it.appearsOnAllSlides && it.slideId !== s.id),
+        ...items.filter((it) => it.slideId === s.id),
+      ]
+      const dataUrl = await generateThumbnail(slideItems, dimensions, slideW, slideH * 2, s)
+      // When the slide has a vibe, the thumbnail already includes it pixel-
+      // perfect, so we don't want the composite step to paint a flat color
+      // underneath (which would leak through transparent edges and look wrong).
+      return { dataUrl, bgColor: s.bgVibe ? null : s.bgColor }
+    }),
+  )
+
+  const totalW = overhead + slides.length * slideW
+  const totalH = PAD * 2 + slideH
+
+  const canvas = document.createElement('canvas')
+  canvas.width = totalW
+  canvas.height = totalH
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return null
+
+  // Workspace pasteboard color as backdrop.
+  ctx.fillStyle = workspaceBgColor || '#0a0a0e'
+  ctx.fillRect(0, 0, totalW, totalH)
+
+  // Load all images in parallel, then composite. Per-slide bg is filled first
+  // so transparent thumbnail edges blend correctly.
+  const imgs = await Promise.all(
+    thumbs.map(({ dataUrl, bgColor }) =>
+      new Promise<{ img: HTMLImageElement | null; bg: string | null }>((resolve) => {
+        if (!dataUrl) { resolve({ img: null, bg: bgColor }); return }
+        const img = new Image()
+        img.onload = () => resolve({ img, bg: bgColor })
+        img.onerror = () => resolve({ img: null, bg: bgColor })
+        img.src = dataUrl
+      }),
+    ),
+  )
+
+  for (let i = 0; i < imgs.length; i++) {
+    const { img, bg } = imgs[i]!
+    const x = PAD + i * (slideW + GAP)
+    const y = PAD
+    // Skip the underlay when the thumbnail already baked in a vibe (bg is null).
+    if (bg !== null) {
+      ctx.fillStyle = bg || '#ffffff'
+      ctx.fillRect(x, y, slideW, slideH)
+    }
+    if (img) ctx.drawImage(img, x, y, slideW, slideH)
+  }
+
+  return new Promise<Blob | null>((resolve) => {
+    canvas.toBlob((blob) => resolve(blob), 'image/png')
+  })
 }

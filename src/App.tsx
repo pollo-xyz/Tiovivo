@@ -1,8 +1,40 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import EditorStage, { type EditorStageHandle } from './components/EditorStage'
-import { useCarouselStore } from './store/useCarouselStore'
-import { PRESETS } from './lib/presets'
+import NumberField from './components/NumberField'
+import MenuBar from './components/MenuBar'
+import McpDialog from './components/McpDialog'
+import StartScreen from './components/StartScreen'
+import AssistantPanel from './components/AssistantPanel'
+import { BrandKitEditor, BrandSwatches } from './components/Brand'
+import { applyBrandToDeck, useBrandStore } from './lib/brand'
+import type { TemplateDeck } from './lib/templates'
+import { runMcpTool, type McpContext } from './lib/mcpBridge'
+import FontPicker from './components/FontPicker'
+import GifPicker from './components/GifPicker'
+import { downloadGif, type GiphyItem } from './lib/giphy'
+import { ToastHost, ConfirmHost } from './components/FeedbackHosts'
+import { TipHost } from './components/TipHost'
+import { Neaticon } from './components/Neaticon'
+import SlideStrip from './components/SlideStrip'
+import { toast, dismissToast, confirmDialog, choiceDialog, useFeedbackStore } from './lib/feedback'
+import { useThemeStore, resolveWorkspaceBg, WORKSPACE_AUTO } from './lib/theme'
+import { removeBackground as runRemoveBackground } from './lib/removeBackground'
+import { useTiovivoStore, type EntranceAnim, type PlacedMedia, type ShapeKind, type TextAlign } from './store/useTiovivoStore'
+import { PRESETS, type PresetId } from './lib/presets'
 import { serializeProject, deserializeProject, hydrateItems } from './lib/projectFile'
+import { generateProjectPreview } from './lib/thumbnail'
+import { FALLBACK_FONTS, listSystemFonts } from './lib/fonts'
+import { detectVideoFps, fpsRoughlyEqual, roundToCommonFps } from './lib/detectVideoFps'
+import { videoElements } from './lib/videoRegistry'
+import { hasMotion } from './lib/effects'
+import EffectsPanel from './components/EffectsPanel'
+import { NAMED_PALETTES, defaultBgVibe, randomSeed, type BgVibe } from './lib/bgVibe'
+import { sampleMediaPalette } from './lib/sampleMediaPalette'
+// 256×256 sibling of the main app icon, exported specifically for the
+// in-app brand mark / future small UI uses. Avoids bundling the full
+// 2400×2400 5.7 MB original into the renderer build just to render at
+// 22 px. Vite hashes and resolves the URL at build time.
+import appIconUrl from '../resources/tiovivo_appicon_small.png'
 import './App.css'
 
 const VPOST_FILTER = [{ name: 'Tiovivo Project', extensions: ['vpost'] }]
@@ -13,124 +45,1092 @@ function sanitizeFilename(name: string): string {
   return name.replace(/[\\/:*?"<>|]/g, '_').replace(/[. ]+$/g, '')
 }
 
+// Tighter sanitiser for filename *segments* (e.g. the slide name inserted
+// between prefix and number). Collapses whitespace to single underscores so
+// "Cover slide" → "Cover_slide" rather than producing filenames with spaces.
+function sanitizeFilenameSegment(name: string): string {
+  return name
+    .replace(/[\\/:*?"<>|]/g, '_')
+    .replace(/\s+/g, '_')
+    .replace(/_{2,}/g, '_')
+    .replace(/^[_.]+|[_.]+$/g, '')
+}
+
 /* ============================================================
-   Tiny inline icon set — keeps bundle small, tunable with CSS
+   Icon set — NeatIcons Pro (the same licensed library toqe uses),
+   inlined via <Neaticon>. Call sites keep the Icon.X names.
    ============================================================ */
+const ni = (name: string) =>
+  function NeaticonGlyph(p: React.SVGProps<SVGSVGElement>) {
+    return <Neaticon name={name} {...p} />
+  }
 const Icon = {
-  Export: (p: React.SVGProps<SVGSVGElement>) => (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" {...p}>
-      <path d="M12 4v12" />
-      <path d="M7 9l5-5 5 5" />
-      <path d="M5 20h14" />
-    </svg>
-  ),
-  Plus: (p: React.SVGProps<SVGSVGElement>) => (
+  Export: ni('upload'),
+  Plus: ni('plus'),
+  Grid: ni('grid-nine-cell'),
+  Sliders: ni('filter-2'),
+  Palette: ni('paint-palette'),
+  Target: ni('crosshair'),
+  Trash: ni('trash'),
+  Reset: ni('arrow-rotate-left-2'),
+  Text: ni('short-paragraph-1'),
+  Shape: ni('category-basic-shapes'),
+  Gif: ni('play-circle'),
+  Eye: ni('eye'),
+  EyeOff: ni('eye-disable'),
+  Layers: ni('layers.to'),
+  Slide: ni('rectangle-repeat'),
+  Link: ni('link-1'),
+  Sun: ni('sun'),
+  Moon: ni('moon-sparkle'),
+  // The library has no "unlink" — keep the slashed chain as a line glyph.
+  LinkOff: (p: React.SVGProps<SVGSVGElement>) => (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}>
-      <path d="M12 5v14M5 12h14" />
-    </svg>
-  ),
-  Grid: (p: React.SVGProps<SVGSVGElement>) => (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}>
-      <rect x="3" y="3" width="7" height="7" rx="1" />
-      <rect x="14" y="3" width="7" height="7" rx="1" />
-      <rect x="3" y="14" width="7" height="7" rx="1" />
-      <rect x="14" y="14" width="7" height="7" rx="1" />
-    </svg>
-  ),
-  Sliders: (p: React.SVGProps<SVGSVGElement>) => (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}>
-      <line x1="4" y1="21" x2="4" y2="14" />
-      <line x1="4" y1="10" x2="4" y2="3" />
-      <line x1="12" y1="21" x2="12" y2="12" />
-      <line x1="12" y1="8" x2="12" y2="3" />
-      <line x1="20" y1="21" x2="20" y2="16" />
-      <line x1="20" y1="12" x2="20" y2="3" />
-      <line x1="1" y1="14" x2="7" y2="14" />
-      <line x1="9" y1="8" x2="15" y2="8" />
-      <line x1="17" y1="16" x2="23" y2="16" />
-    </svg>
-  ),
-  Target: (p: React.SVGProps<SVGSVGElement>) => (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}>
-      <circle cx="12" cy="12" r="9" />
-      <circle cx="12" cy="12" r="2" fill="currentColor" />
-    </svg>
-  ),
-  Trash: (p: React.SVGProps<SVGSVGElement>) => (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}>
-      <path d="M3 6h18" />
-      <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-      <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
-    </svg>
-  ),
-  Reset: (p: React.SVGProps<SVGSVGElement>) => (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}>
-      <path d="M3 12a9 9 0 1 0 3-6.7" />
-      <path d="M3 4v5h5" />
+      <path d="M10 13a5 5 0 0 0 7.07 0l1-1" />
+      <path d="M14 11a5 5 0 0 0-7.07 0l-1 1" />
+      <path d="M3 3l18 18" />
     </svg>
   ),
 }
 
 
+/* ============================================================
+   Popover — small anchored dropdown shared by the Format chip,
+   the Export button, and the canvas View cluster. Render inside
+   a `.popover-host` (position: relative) next to its trigger;
+   closes on outside click or Escape. The host wraps the trigger
+   too, so a click on the trigger doesn't count as "outside" and
+   the trigger's own onClick can toggle cleanly.
+   ============================================================ */
+function Popover({
+  open,
+  onClose,
+  up,
+  alignRight,
+  width,
+  children,
+}: {
+  open: boolean
+  onClose: () => void
+  /** Open above the trigger (for the canvas-bottom View cluster). */
+  up?: boolean
+  /** Anchor to the trigger's right edge (for right-side header items). */
+  alignRight?: boolean
+  width?: number
+  children: React.ReactNode
+}) {
+  const ref = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!open) return
+    const onDown = (e: MouseEvent) => {
+      const host = ref.current?.parentElement
+      if (host && !host.contains(e.target as Node)) onClose()
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose()
+    }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [open, onClose])
+  if (!open) return null
+  return (
+    <div
+      ref={ref}
+      className={`popover${up ? ' popover--up' : ''}${alignRight ? ' popover--right' : ''}`}
+      style={width ? { width } : undefined}
+    >
+      {children}
+    </div>
+  )
+}
+
+/** Header label for each canvas preset (the format chip's bold half). */
+const PRESET_LABELS: Record<string, string> = {
+  hd: '16:9',
+  '1:1': '1:1',
+  '4:5': '4:5',
+  '3:4': '3:4',
+  '9:16': '9:16',
+  custom: 'Custom',
+}
+
+/** Format seconds → "1m 04s" / "12s" for the export elapsed-time readout. */
+function formatElapsed(ms: number): string {
+  const total = Math.floor(ms / 1000)
+  const m = Math.floor(total / 60)
+  const s = total % 60
+  return m > 0 ? `${m}m ${String(s).padStart(2, '0')}s` : `${s}s`
+}
+
+/** Drives the gradient-filled track on .slider-field range inputs. Mirrors the
+ *  helper in EditorStage.tsx; shared here so every panel slider can use the
+ *  same look without duplicating the math. */
+/** Re-encode a slide PNG as JPEG (photo-mode export: smaller files, and
+ *  what TikTok / Instagram re-compress to anyway). */
+async function pngToJpeg(png: Blob): Promise<Blob> {
+  const bmp = await createImageBitmap(png)
+  const canvas = document.createElement('canvas')
+  canvas.width = bmp.width
+  canvas.height = bmp.height
+  canvas.getContext('2d')!.drawImage(bmp, 0, 0)
+  bmp.close()
+  const out = await new Promise<Blob | null>((res) => canvas.toBlob(res, 'image/jpeg', 0.94))
+  if (!out) throw new Error('JPEG encoding failed')
+  return out
+}
+
+type ExportMode = 'slides' | 'photos' | 'video'
+type ReelTransition = 'cut' | 'fade' | 'push'
+
+function sliderFill(value: number, min: number, max: number): React.CSSProperties {
+  const pct = ((value - min) / (max - min)) * 100
+  return { ['--fill' as string]: `${Math.min(100, Math.max(0, pct))}%` } as React.CSSProperties
+}
+
+/** Input types that take typed text — keystrokes there belong to the field.
+ *  Sliders, checkboxes and colour swatches are NOT here: after clicking one,
+ *  Delete / Ctrl+Z / [ ] must still reach the canvas. */
+const TEXT_INPUT_TYPES = new Set([
+  'text', 'number', 'search', 'email', 'url', 'password', 'tel',
+  'date', 'datetime-local', 'month', 'time', 'week',
+])
+
+/** True when key events on `el` are text editing (input / textarea /
+ *  select / contenteditable) and app shortcuts must stand aside. */
+function isTextEntryTarget(el: EventTarget | null): boolean {
+  if (!(el instanceof HTMLElement)) return false
+  if (el.isContentEditable) return true
+  if (el instanceof HTMLTextAreaElement || el instanceof HTMLSelectElement) return true
+  return el instanceof HTMLInputElement && TEXT_INPUT_TYPES.has(el.type)
+}
+
+/** Undo / redo from a menu (native app:undo IPC on macOS, the in-app Edit
+ *  menu elsewhere). With a text field focused the user means the field's
+ *  own text history — Cmd+Z there used to rewind the canvas instead. */
+function runUndoRedo(kind: 'undo' | 'redo') {
+  const el = document.activeElement
+  if (isTextEntryTarget(el) && !(el instanceof HTMLSelectElement)) {
+    document.execCommand(kind)
+    return
+  }
+  const st = useTiovivoStore.getState()
+  if (kind === 'undo') st.undo()
+  else st.redo()
+}
+
+/** Apply a vibe edit to every slide that already has one, merging ONLY the
+ *  edited field(s) into each slide's own vibe. Sending the active slide's
+ *  full config (the old behaviour) reset every other slide's palette and
+ *  sliders on a single Grain nudge, and turned solid slides into vibes. */
+function patchAllSlideVibes(patch: Partial<Omit<BgVibe, 'seed'>>) {
+  useTiovivoStore.getState().patchAllSlidesBgVibe(patch)
+}
+
+function slideHasAnimatedExport(items: PlacedMedia[], slideId: string): boolean {
+  return items.some((it) => {
+    if (it.slideId === slideId && (it.type === 'video' || it.type === 'gif')) return true
+    // Effects that move make the slide a loop rather than a still.
+    if (it.slideId === slideId && hasMotion(it)) return true
+    // GIF masters render as animated ghosts on every other slide, so those
+    // slides need MP4 export too. Video masters currently render as static
+    // placeholders on non-home slides, so don't promote them here.
+    return it.type === 'gif' && !!it.appearsOnAllSlides && it.slideId !== slideId
+  })
+}
+
+/* ============================================================
+   BackgroundPanel — Solid/Vibe modes, palette, sliders, randomize
+   ============================================================ */
+
+type BackgroundPanelProps = {
+  slides: ReturnType<typeof useTiovivoStore.getState>['slides']
+  activeSlideId: string
+  /** Single-selection media item to sample colours from; null when the user
+   *  has nothing selected or has selected multiple / non-media items. */
+  selectedMediaItem: PlacedMedia | null
+  setAllSlidesBgVibe: (vibe: Omit<BgVibe, 'seed'> | null) => void
+  setSlideBgVibe: (slideId: string, vibe: BgVibe | null) => void
+  randomizeAllSlideVibes: () => void
+  randomizeSlideVibe: (slideId: string) => void
+}
+
+function BackgroundPanel({
+  slides,
+  activeSlideId,
+  selectedMediaItem,
+  setAllSlidesBgVibe,
+  setSlideBgVibe,
+  randomizeAllSlideVibes,
+  randomizeSlideVibe,
+}: BackgroundPanelProps) {
+  // "Mode" is derived from whether the active slide has a vibe — keeps the
+  // panel and the actual state in sync, no parallel UI state to drift.
+  const activeSlide = slides.find((s) => s.id === activeSlideId)
+  const mode: 'solid' | 'vibe' = activeSlide?.bgVibe ? 'vibe' : 'solid'
+
+  // Take the active slide's vibe as the source of truth for slider/palette
+  // values shown in the panel; falls back to a freshly-rolled default so
+  // turning the toggle on can start drawing immediately.
+  const vibe = activeSlide?.bgVibe
+  const config: Omit<BgVibe, 'seed'> = useMemo(
+    () =>
+      vibe
+        ? {
+            palette: vibe.palette,
+            pointCount: vibe.pointCount,
+            blur: vibe.blur,
+            soften: vibe.soften ?? 0,
+            grain: vibe.grain,
+            size: vibe.size ?? 1,
+            randomSize: vibe.randomSize ?? false,
+            randomLayer: vibe.randomLayer ?? false,
+          }
+        : (() => {
+            const d = defaultBgVibe()
+            return {
+              palette: d.palette,
+              pointCount: d.pointCount,
+              blur: d.blur,
+              soften: d.soften ?? 0,
+              grain: d.grain,
+              size: d.size ?? 1,
+              randomSize: d.randomSize ?? false,
+              randomLayer: d.randomLayer ?? false,
+            }
+          })(),
+    [vibe],
+  )
+
+  // Custom user palettes — persisted to localStorage so they outlive the
+  // current project. Each entry is { name, colors }, matching NAMED_PALETTES.
+  const [customPalettes, setCustomPalettes] = useState<{ name: string; colors: string[] }[]>(() => {
+    try {
+      const raw = localStorage.getItem('tiovivo.customPalettes')
+      if (!raw) return []
+      const parsed = JSON.parse(raw)
+      if (!Array.isArray(parsed)) return []
+      return parsed.filter(
+        (p: unknown): p is { name: string; colors: string[] } =>
+          !!p &&
+          typeof (p as { name?: unknown }).name === 'string' &&
+          Array.isArray((p as { colors?: unknown }).colors) &&
+          (p as { colors: unknown[] }).colors.every((c) => typeof c === 'string'),
+      )
+    } catch {
+      return []
+    }
+  })
+  useEffect(() => {
+    try {
+      localStorage.setItem('tiovivo.customPalettes', JSON.stringify(customPalettes))
+    } catch {
+      // localStorage may be unavailable / full — best-effort.
+    }
+  }, [customPalettes])
+
+  const savePaletteAsCustom = () => {
+    // Auto-name as CustomN — pick the lowest free integer so deleting and
+    // re-saving reuses gaps rather than creeping the counter forward forever.
+    // Double-click the preset row to rename afterwards.
+    setCustomPalettes((cur) => {
+      const taken = new Set(cur.map((p) => p.name))
+      let n = 1
+      while (taken.has(`Custom${n}`)) n++
+      return [...cur, { name: `Custom${n}`, colors: [...config.palette] }]
+    })
+  }
+
+  const deleteCustomPalette = (name: string) => {
+    void confirmDialog({
+      title: 'Delete palette',
+      message: `Delete the "${name}" palette?`,
+      confirmLabel: 'Delete',
+      danger: true,
+    }).then((ok) => {
+      if (ok) setCustomPalettes((cur) => cur.filter((p) => p.name !== name))
+    })
+  }
+
+  // Inline rename for a saved custom palette. Double-click its name to enter,
+  // Enter / blur commits, Escape cancels. Collisions get auto-suffixed so two
+  // entries never share a name (which would make them indistinguishable in
+  // the preset list).
+  const [renamingCustomName, setRenamingCustomName] = useState<string | null>(null)
+  const [renameDraft, setRenameDraft] = useState('')
+  const commitRename = (oldName: string) => {
+    const trimmed = renameDraft.trim()
+    setRenamingCustomName(null)
+    if (!trimmed || trimmed === oldName) return
+    setCustomPalettes((cur) => {
+      // If another entry already uses this name, append " 2", " 3", … so the
+      // rename always succeeds rather than silently dropping the user's input.
+      let target = trimmed
+      if (cur.some((p) => p.name === target && p.name !== oldName)) {
+        let k = 2
+        while (cur.some((p) => p.name === `${trimmed} ${k}`)) k++
+        target = `${trimmed} ${k}`
+      }
+      return cur.map((p) => (p.name === oldName ? { ...p, name: target } : p))
+    })
+  }
+
+  // Each click on "Sample from Media" passes an incrementing seed so the
+  // helper takes a slightly different statistical view of the image. Reset
+  // when the selected media item changes so the first click on a new image
+  // is the canonical deterministic result, not a subsampled variation.
+  const sampleSeedRef = useRef(0)
+  useEffect(() => {
+    sampleSeedRef.current = 0
+  }, [selectedMediaItem?.id])
+
+  // Scope: 'all' propagates every panel edit to every slide (keeping each
+  // slide's existing seed so positions don't reshuffle on slider drag).
+  // 'selected' confines edits to the active slide only — switch into this
+  // mode when you want to make one slide diverge from the rest.
+  const [scope, setScope] = useState<'all' | 'selected'>('all')
+
+  const apply = useCallback(
+    (patch: Partial<Omit<BgVibe, 'seed'>>) => {
+      if (scope === 'all') {
+        // Only the edited field(s) propagate — each slide keeps the rest of
+        // its own vibe, and solid slides stay solid.
+        patchAllSlideVibes(patch)
+      } else {
+        // Preserve the active slide's existing seed when one is set, otherwise
+        // mint a fresh one (so first-touch in 'selected' mode immediately
+        // gives this slide a distinct composition).
+        const seed = activeSlide?.bgVibe?.seed ?? randomSeed()
+        setSlideBgVibe(activeSlideId, { ...config, ...patch, seed })
+      }
+    },
+    [config, scope, activeSlide, activeSlideId, setSlideBgVibe],
+  )
+
+  const setPaletteColor = (i: number, color: string) => {
+    const next = config.palette.slice()
+    next[i] = color
+    apply({ palette: next })
+  }
+  const addPaletteColor = () => {
+    if (config.palette.length >= 8) return
+    const seed = config.palette[config.palette.length - 1] || '#888888'
+    apply({ palette: [...config.palette, seed] })
+  }
+  const removePaletteColor = (i: number) => {
+    if (config.palette.length <= 2) return
+    apply({ palette: config.palette.filter((_, idx) => idx !== i) })
+  }
+
+  // Solid/Vibe toggle and palette/slider edits all route through these so the
+  // scope-aware branching lives in one place.
+  const setMode = (next: 'solid' | 'vibe') => {
+    if (next === 'solid') {
+      if (scope === 'all') setAllSlidesBgVibe(null)
+      else setSlideBgVibe(activeSlideId, null)
+    } else {
+      if (scope === 'all') {
+        setAllSlidesBgVibe(config)
+      } else {
+        const seed = activeSlide?.bgVibe?.seed ?? randomSeed()
+        setSlideBgVibe(activeSlideId, { ...config, seed })
+      }
+    }
+  }
+
+  const hasMultipleSlides = slides.length > 1
+
+  return (
+    <>
+      {/* Mode selector — same segmented-pill structure as the header's
+          HD/1:1/4:5 preset row, but uses the quieter .btn--seg-active for
+          the in-panel context where the bright accent glow felt overbearing. */}
+      <div className="app__presets" style={{ marginBottom: 4 }}>
+        <button
+          type="button"
+          className={`btn ${mode === 'solid' ? 'btn--seg-active' : ''}`}
+          onClick={() => setMode('solid')}
+          style={{ flex: 1 }}
+        >
+          Solid
+        </button>
+        <button
+          type="button"
+          className={`btn ${mode === 'vibe' ? 'btn--seg-active' : ''}`}
+          onClick={() => setMode('vibe')}
+          style={{ flex: 1 }}
+        >
+          Vibe
+        </button>
+      </div>
+
+      {mode === 'solid' && activeSlide && (
+        <>
+          <label className="field" style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+            <span>Color</span>
+            <input
+              className="color-swatch"
+              type="color"
+              value={activeSlide.bgColor || '#ffffff'}
+              onChange={(e) => useTiovivoStore.getState().setSlideBgColor(activeSlideId, e.target.value)}
+            />
+            <span className="field__value" style={{ flex: 1 }}>{activeSlide.bgColor || '#ffffff'}</span>
+            <BrandSwatches
+              value={activeSlide.bgColor}
+              onPick={(c) => useTiovivoStore.getState().setSlideBgColor(activeSlideId, c)}
+            />
+          </label>
+          {hasMultipleSlides && (
+            <button
+              type="button"
+              className="btn btn--sm"
+              style={{ alignSelf: 'flex-start' }}
+              onClick={() => useTiovivoStore.getState().setAllSlidesBgColor(activeSlide.bgColor || '#ffffff')}
+              title="Give every slide this background colour"
+            >
+              Use on all slides
+            </button>
+          )}
+        </>
+      )}
+
+      {/* Scope — 'All slides' (default) or 'Selected slide'. Only meaningful
+          for Vibe (where multiple settings can diverge between slides) and
+          when there's more than one slide. */}
+      {hasMultipleSlides && mode === 'vibe' && (
+        <div className="app__presets" style={{ marginBottom: 6 }}>
+          <button
+            type="button"
+            className={`btn ${scope === 'all' ? 'btn--seg-active' : ''}`}
+            onClick={() => setScope('all')}
+            style={{ flex: 1 }}
+            title="Edits, randomize and Solid/Vibe affect every slide (default)"
+          >
+            All slides
+          </button>
+          <button
+            type="button"
+            className={`btn ${scope === 'selected' ? 'btn--seg-active' : ''}`}
+            onClick={() => setScope('selected')}
+            style={{ flex: 1 }}
+            title="Edits affect only the currently selected slide"
+          >
+            Selected slide
+          </button>
+        </div>
+      )}
+
+      {mode === 'vibe' && (
+        <>
+          {/* Palette swatches. palette[0] is the base wash — the "BG" badge
+              sits over its swatch (pointer-events: none so clicks fall through
+              to the colour input) and replaces the prior "First swatch is the
+              base" hint. */}
+          <div className="field">
+            <span>
+              Palette
+              <span className="hint hint--inline" style={{ marginLeft: 6 }}>
+                · Right-click to remove
+              </span>
+            </span>
+            <div className="palette-grid">
+              {config.palette.map((c, i) => {
+                if (i === 0) {
+                  return (
+                    <span key={i} className="palette-swatch-wrap">
+                      <input
+                        className="palette-swatch palette-swatch--base"
+                        type="color"
+                        value={c}
+                        onChange={(e) => setPaletteColor(0, e.target.value)}
+                        title="Base / background colour — always painted first"
+                        onContextMenu={(e) => { e.preventDefault(); removePaletteColor(0) }}
+                      />
+                      <span className="palette-swatch__badge" aria-hidden>BG</span>
+                    </span>
+                  )
+                }
+                return (
+                  <input
+                    key={i}
+                    className="palette-swatch"
+                    type="color"
+                    value={c}
+                    onChange={(e) => setPaletteColor(i, e.target.value)}
+                    title="Click to edit, right-click to remove"
+                    onContextMenu={(e) => { e.preventDefault(); removePaletteColor(i) }}
+                  />
+                )
+              })}
+              {config.palette.length < 8 && (
+                <button
+                  type="button"
+                  className="palette-swatch palette-swatch--add"
+                  onClick={addPaletteColor}
+                  title="Add a color"
+                >
+                  +
+                </button>
+              )}
+            </div>
+            {/* Palette actions — sit directly under the swatch grid so the
+                relationship between buttons and palette is obvious. Sample
+                button is disabled until a single media item is selected. */}
+            <div className="palette-actions">
+              <button
+                type="button"
+                className="btn btn--sm"
+                onClick={savePaletteAsCustom}
+                title="Save the current palette so it's available in every project"
+              >
+                + Save preset
+              </button>
+              <button
+                type="button"
+                className="btn btn--sm"
+                onClick={async () => {
+                  if (!selectedMediaItem) return
+                  // First click on this item = canonical (seed 0); each
+                  // subsequent click increments → seeded subsample for a
+                  // different palette take on the same image.
+                  const seed = sampleSeedRef.current
+                  sampleSeedRef.current = seed + 1
+                  try {
+                    const colors = await sampleMediaPalette(
+                      selectedMediaItem,
+                      Math.max(2, config.palette.length),
+                      seed,
+                    )
+                    if (colors.length) apply({ palette: colors })
+                  } catch (err) {
+                    console.error('[sample-from-media] failed:', err)
+                    toast(
+                      'Could not sample colours from the selected media. ' +
+                      'For videos make sure the frame is decoded; for images, check the file is still loaded.',
+                      { kind: 'error' },
+                    )
+                  }
+                }}
+                disabled={!selectedMediaItem}
+                title={
+                  selectedMediaItem
+                    ? `Sample colours from "${selectedMediaItem.name}" — click again for variations`
+                    : 'Select a single image or video on the canvas to enable'
+                }
+              >
+                Sample from Media
+              </button>
+            </div>
+          </div>
+
+          {/* Preset palettes — quick-pick. Built-in palettes first, custom
+              (user-saved) entries pinned at the bottom under a small
+              divider. List is bounded and scrolls internally so a growing
+              custom collection doesn't push the sliders off-screen. */}
+          <div className="field">
+            <span>Presets</span>
+            <div className="preset-list">
+              {NAMED_PALETTES.map((preset) => (
+                <button
+                  key={preset.name}
+                  type="button"
+                  className="preset"
+                  onClick={() => apply({ palette: [...preset.colors] })}
+                  title={`Use the ${preset.name} palette`}
+                >
+                  <span className="preset__name">{preset.name}</span>
+                  <span className="preset__swatches">
+                    {preset.colors.map((c, j) => (
+                      <span key={j} style={{ background: c }} />
+                    ))}
+                  </span>
+                </button>
+              ))}
+              {customPalettes.length > 0 && (
+                <div className="preset-list__divider">Custom</div>
+              )}
+              {customPalettes.map((preset) => {
+                const isRenaming = renamingCustomName === preset.name
+                return (
+                  <div key={`custom-${preset.name}`} className="preset preset--custom">
+                    <button
+                      type="button"
+                      className="preset__pick"
+                      onClick={() => { if (!isRenaming) apply({ palette: [...preset.colors] }) }}
+                      title={isRenaming ? undefined : `Use the ${preset.name} palette · double-click name to rename`}
+                    >
+                      {isRenaming ? (
+                        <input
+                          autoFocus
+                          type="text"
+                          className="preset__name preset__name-input"
+                          value={renameDraft}
+                          onChange={(e) => setRenameDraft(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') { e.preventDefault(); commitRename(preset.name) }
+                            else if (e.key === 'Escape') { e.preventDefault(); setRenamingCustomName(null) }
+                            e.stopPropagation()
+                          }}
+                          onBlur={() => commitRename(preset.name)}
+                          // Block parent button click while editing.
+                          onClick={(e) => e.stopPropagation()}
+                          onMouseDown={(e) => e.stopPropagation()}
+                          onFocus={(e) => e.currentTarget.select()}
+                          spellCheck={false}
+                          maxLength={32}
+                        />
+                      ) : (
+                        <span
+                          className="preset__name"
+                          onDoubleClick={(e) => {
+                            e.stopPropagation()
+                            setRenameDraft(preset.name)
+                            setRenamingCustomName(preset.name)
+                          }}
+                        >
+                          {preset.name}
+                        </span>
+                      )}
+                      <span className="preset__swatches">
+                        {preset.colors.map((c, j) => (
+                          <span key={j} style={{ background: c }} />
+                        ))}
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      className="preset__delete"
+                      onClick={(e) => { e.stopPropagation(); deleteCustomPalette(preset.name) }}
+                      title="Delete this palette"
+                    >
+                      ×
+                    </button>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+
+          {/* Sliders — same .slider-field pattern as the item Corrections popover. */}
+          <label className="slider-field">
+            <span className="slider-field__label">
+              Points<span className="slider-field__value">{config.pointCount}</span>
+            </span>
+            <input
+              type="range"
+              min={3}
+              max={8}
+              step={1}
+              value={config.pointCount}
+              style={sliderFill(config.pointCount, 3, 8)}
+              onChange={(e) => apply({ pointCount: Number(e.target.value) })}
+              onDoubleClick={() => apply({ pointCount: 5 })}
+            />
+          </label>
+          {/* Size acts as the macro scale of every blob. Composes with the
+              Randomize size toggle below: that adds per-point jitter (0.55×
+              –1.45×) around whatever Size value is set, so Size=2 + Random
+              size gives points ~1.1×–2.9× of the original baseR. */}
+          <label className="slider-field">
+            <span className="slider-field__label">
+              Size<span className="slider-field__value">{Math.round((config.size ?? 1) * 100)}%</span>
+            </span>
+            <input
+              type="range"
+              min={0.4}
+              max={2.5}
+              step={0.05}
+              value={config.size ?? 1}
+              style={sliderFill(config.size ?? 1, 0.4, 2.5)}
+              onChange={(e) => apply({ size: Number(e.target.value) })}
+              onDoubleClick={() => apply({ size: 1 })}
+            />
+          </label>
+          <label className="slider-field">
+            <span className="slider-field__label">
+              Blur<span className="slider-field__value">{Math.round(config.blur)}</span>
+            </span>
+            <input
+              type="range"
+              min={0}
+              max={200}
+              step={1}
+              value={config.blur}
+              style={sliderFill(config.blur, 0, 200)}
+              onChange={(e) => apply({ blur: Number(e.target.value) })}
+              onDoubleClick={() => apply({ blur: 80 })}
+            />
+          </label>
+          {/* Post-composite gaussian across the whole background — where Blur
+              softens each blob individually, Soften blends between them,
+              melting gradient-stop rings, hard blob edges and any remaining
+              band-like structure. */}
+          <label className="slider-field" title="Blur the finished background as a whole — smooths blob transitions and removes any remaining banding-like rings.">
+            <span className="slider-field__label">
+              Soften<span className="slider-field__value">{Math.round(config.soften ?? 0)}</span>
+            </span>
+            <input
+              type="range"
+              min={0}
+              max={60}
+              step={1}
+              value={config.soften ?? 0}
+              style={sliderFill(config.soften ?? 0, 0, 60)}
+              onChange={(e) => apply({ soften: Number(e.target.value) })}
+              onDoubleClick={() => apply({ soften: 0 })}
+            />
+          </label>
+          <label className="slider-field">
+            <span className="slider-field__label">
+              Grain<span className="slider-field__value">{Math.round(config.grain * 100)}%</span>
+            </span>
+            <input
+              type="range"
+              min={0}
+              max={1}
+              step={0.01}
+              value={config.grain}
+              style={sliderFill(config.grain, 0, 1)}
+              onChange={(e) => apply({ grain: Number(e.target.value) })}
+              onDoubleClick={() => apply({ grain: 0 })}
+            />
+          </label>
+
+          {/* Per-seed variation toggles. Both are deterministic from the seed,
+              so rerolling (Randomize) varies the result; toggling them off
+              returns to a uniform / palette-order rendering. */}
+          <label className="check" title="Each blob gets a per-point seeded size multiplier (0.55×–1.45×) — some are smaller, some larger.">
+            <input
+              type="checkbox"
+              checked={!!config.randomSize}
+              onChange={(e) => apply({ randomSize: e.target.checked })}
+            />
+            Randomize size
+          </label>
+          <label className="check" title="Paint blobs in a seed-shuffled order instead of palette order — changes which colors land on top.">
+            <input
+              type="checkbox"
+              checked={!!config.randomLayer}
+              onChange={(e) => apply({ randomLayer: e.target.checked })}
+            />
+            Randomize layer
+          </label>
+
+          {/* Randomize buttons */}
+          <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
+            <button
+              type="button"
+              className="btn"
+              onClick={() => randomizeAllSlideVibes()}
+              title="Reroll point positions on every slide"
+              style={{ flex: 1, flexDirection: 'row', gap: 6, padding: '6px 10px', justifyContent: 'center' }}
+            >
+              <Icon.Reset style={{ width: 13, height: 13 }} />
+              Randomize all
+            </button>
+            <button
+              type="button"
+              className="btn"
+              onClick={() => randomizeSlideVibe(activeSlideId)}
+              title="Reroll point positions on the active slide only"
+              style={{ flex: 1, flexDirection: 'row', gap: 6, padding: '6px 10px', justifyContent: 'center' }}
+            >
+              <Icon.Reset style={{ width: 13, height: 13 }} />
+              This slide
+            </button>
+          </div>
+        </>
+      )}
+
+    </>
+  )
+}
+
+/* ============================================================
+   RemoveBgButton — runs @imgly/background-removal on the
+   selected image. First run downloads ~30 MB of model weights
+   to IndexedDB; subsequent runs are fully offline.
+   ============================================================ */
+function RemoveBgButton({
+  item,
+  onResult,
+}: {
+  item: PlacedMedia
+  onResult: (src: string, name: string) => void
+}) {
+  const [busy, setBusy] = useState(false)
+  const [progress, setProgress] = useState<{ phase: string; pct: number } | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  const run = useCallback(async () => {
+    if (busy) return
+    setBusy(true)
+    setError(null)
+    setProgress({ phase: 'fetch:model', pct: 0 })
+    try {
+      // Always use the highest-quality model + the illustration post-pass.
+      // Photos still look fine here; the hard alpha threshold sometimes
+      // chops a few stray semi-transparent pixels on hair / fur but the
+      // crisp edges win for the carousel use case more often than not.
+      const blob = await runRemoveBackground(item.src, {
+        mode: 'illustration',
+        onProgress: ({ phase, loaded, total }) => {
+          const pct = total > 0 ? loaded / total : 0
+          setProgress({ phase, pct })
+        },
+      })
+      const newSrc = URL.createObjectURL(blob)
+      const base = item.name.replace(/\.[a-z0-9]+$/i, '') || 'image'
+      onResult(newSrc, `${base} (no bg).png`)
+    } catch (err) {
+      console.error('[remove-bg] failed:', err)
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setBusy(false)
+      setProgress(null)
+    }
+  }, [busy, item.src, item.name, onResult])
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 8 }}>
+      <button
+        type="button"
+        className="btn btn--sm"
+        onClick={() => void run()}
+        disabled={busy}
+        style={{ alignSelf: 'stretch', gap: 6, flexDirection: 'row', justifyContent: 'center' }}
+        title="Run a local AI model to make the image background transparent. First run downloads ~150 MB of model weights to the local IndexedDB cache; subsequent runs are fully offline and instant-loading."
+      >
+        {busy ? (
+          <>
+            <span className="remove-bg-spinner" aria-hidden />
+            {progress?.phase.startsWith('fetch:') ? 'Downloading model' : 'Removing background'}
+            {progress && progress.pct > 0 && progress.pct < 1 ? ` · ${Math.round(progress.pct * 100)}%` : '…'}
+          </>
+        ) : (
+          <>
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="12" cy="12" r="9" />
+              <path d="M4 4l16 16" />
+            </svg>
+            Remove background (beta)
+          </>
+        )}
+      </button>
+      {error && (
+        <span style={{ fontSize: 11, color: 'var(--danger)' }}>
+          {error}
+        </span>
+      )}
+    </div>
+  )
+}
+
 export default function App() {
   const stageRef = useRef<EditorStageHandle>(null)
   const [exporting, setExporting] = useState(false)
+  // Synchronous mirror for event handlers: export walks the LIVE store
+  // slide by slide, so undo / delete / open mid-export corrupt the output.
+  const exportingRef = useRef(false)
   const [exportProgress, setExportProgress] = useState('')
+  // Cycling 0–3 dots + a wall-clock timer keep the export indicator visibly
+  // animated even when the percentage is stuck waiting on a slow ffmpeg frame.
+  // Avoids the "is it frozen?" panic without lying about real progress.
+  const [exportPulse, setExportPulse] = useState(0)
+  const [exportElapsed, setExportElapsed] = useState('')
+  // Preview shown under the export veil. Starts as a snapshot of whatever
+  // the user was looking at pre-export so the canvas isn't visibly blank,
+  // then swaps to a downscaled live capture frame as the encoder advances.
+  const [exportPreview, setExportPreview] = useState<string | null>(null)
+  useEffect(() => {
+    if (!exporting) {
+      setExportPulse(0)
+      setExportElapsed('')
+      setExportPreview(null)
+      return
+    }
+    const start = performance.now()
+    const id = setInterval(() => {
+      setExportPulse((p) => (p + 1) % 4)
+      setExportElapsed(formatElapsed(performance.now() - start))
+    }, 500)
+    return () => clearInterval(id)
+  }, [exporting])
   const [projectPath, setProjectPath] = useState<string | null>(null)
   const projectPathRef = useRef<string | null>(null)
   projectPathRef.current = projectPath
 
   const [exportPrefix, setExportPrefix] = useState<string>('')
+  // When on, export filenames become `${prefix}_${SLIDENAME}_${nn}` for any
+  // slide that has a custom name; slides without a custom name fall back to
+  // the plain `${prefix}_${nn}` form so the toggle never produces ugly
+  // `Slide_1` filler segments. Session-local, not persisted to .vpost.
+  const [includeSlideNameInFilename, setIncludeSlideNameInFilename] = useState(false)
+  // Aspect-ratio lock for the W × H inputs. When on, editing one dimension
+  // scales the other proportionally to the current aspect — same UX as
+  // Photoshop's "Constrain Proportions" chain. Locks at the moment of edit
+  // using the live dimensions, so toggling a preset and then editing
+  // honours the preset's aspect.
+  const [lockAspect, setLockAspect] = useState(true)
+  // Giphy picker state — anchored to the "Add GIF" button below. The actual
+  // pick handler is defined further down (after `addMedia` is in scope).
+  const [gifPickerOpen, setGifPickerOpen] = useState(false)
+  // Dev aid (View → Show CSS outlines): outlines every region + control so
+  // the user can name elements precisely when giving design feedback.
+  const [showOutlines, setShowOutlines] = useState(false)
+  const [mcpOpen, setMcpOpen] = useState(false)
+  // The start screen is the front door: shown at launch and after File → New.
+  const [startOpen, setStartOpen] = useState(true)
+  const [assistantOpen, setAssistantOpen] = useState(false)
+
+  // Header + canvas popovers (Format chip, Export options, View cluster).
+  const [formatOpen, setFormatOpen] = useState(false)
+  const [exportOpen, setExportOpen] = useState(false)
+  // What Export produces: a file per slide, JPEG stills, or one video.
+  const [exportMode, setExportMode] = useState<ExportMode>('slides')
+  const [reelTransition, setReelTransition] = useState<ReelTransition>('fade')
+  const [viewOpen, setViewOpen] = useState(false)
+  const gifPickerAnchorRef = useRef<HTMLButtonElement>(null)
   const [viewport, setViewport] = useState({ w: 920, h: 640 })
   const [isDragOver, setIsDragOver] = useState(false)
+  const [fontList, setFontList] = useState<string[]>(FALLBACK_FONTS)
+  // Recently-opened .vpost paths for the in-app File menu (Windows / Linux).
+  // We don't pre-fetch on macOS because Mac shows them in the native menu
+  // and the in-app MenuBar isn't rendered there.
+  const [recents, setRecents] = useState<{ path: string; basename: string }[]>([])
+  const refreshRecents = useCallback(async () => {
+    if (/Mac/.test(navigator.userAgent)) return
+    try {
+      const paths = await window.electronAPI?.getRecents?.()
+      if (paths) {
+        setRecents(paths.map((p) => ({
+          path: p,
+          basename: p.split(/[/\\]/).pop() || p,
+        })))
+      }
+    } catch (err) {
+      console.warn('[recents] fetch failed:', err)
+    }
+  }, [])
+  useEffect(() => { void refreshRecents() }, [refreshRecents])
 
-  const dimensions = useCarouselStore((s) => s.dimensions)
-  const presetId = useCarouselStore((s) => s.presetId)
-  const customWidth = useCarouselStore((s) => s.customWidth)
-  const customHeight = useCarouselStore((s) => s.customHeight)
-  const setPreset = useCarouselStore((s) => s.setPreset)
-  const setCustomDimensions = useCarouselStore((s) => s.setCustomDimensions)
+  const dimensions = useTiovivoStore((s) => s.dimensions)
+  const presetId = useTiovivoStore((s) => s.presetId)
+  const setPreset = useTiovivoStore((s) => s.setPreset)
+  const setCustomDimensions = useTiovivoStore((s) => s.setCustomDimensions)
 
-  const slides = useCarouselStore((s) => s.slides)
-  const activeSlideId = useCarouselStore((s) => s.activeSlideId)
-  const selectedIds = useCarouselStore((s) => s.selectedIds)
-  const items = useCarouselStore((s) => s.items)
-  const removeItem = useCarouselStore((s) => s.removeItem)
-  const removeItems = useCarouselStore((s) => s.removeItems)
-  const addMedia = useCarouselStore((s) => s.addMedia)
+  const slides = useTiovivoStore((s) => s.slides)
+  const activeSlideId = useTiovivoStore((s) => s.activeSlideId)
+  const selectedIds = useTiovivoStore((s) => s.selectedIds)
+  const items = useTiovivoStore((s) => s.items)
+  const removeItem = useTiovivoStore((s) => s.removeItem)
+  const removeItems = useTiovivoStore((s) => s.removeItems)
+  const addMedia = useTiovivoStore((s) => s.addMedia)
+  const addText = useTiovivoStore((s) => s.addText)
+  const addShape = useTiovivoStore((s) => s.addShape)
+  const updateItem = useTiovivoStore((s) => s.updateItem)
+  const syncItemMeasurements = useTiovivoStore((s) => s.syncItemMeasurements)
 
-  const showGrid = useCarouselStore((s) => s.showGrid)
-  const gridSize = useCarouselStore((s) => s.gridSize)
-  const showCenterGuides = useCarouselStore((s) => s.showCenterGuides)
-  const snapGrid = useCarouselStore((s) => s.snapGrid)
-  const snapCenter = useCarouselStore((s) => s.snapCenter)
-  const snapItems = useCarouselStore((s) => s.snapItems)
-  const snapMargins = useCarouselStore((s) => s.snapMargins)
-  const seamlessSlides = useCarouselStore((s) => s.seamlessSlides)
-  const setSeamlessSlides = useCarouselStore((s) => s.setSeamlessSlides)
-  const showHiddenZone = useCarouselStore((s) => s.showHiddenZone)
-  const setShowHiddenZone = useCarouselStore((s) => s.setShowHiddenZone)
-  const setShowGrid = useCarouselStore((s) => s.setShowGrid)
-  const setGridSize = useCarouselStore((s) => s.setGridSize)
-  const setShowCenterGuides = useCarouselStore((s) => s.setShowCenterGuides)
-  const setSnapGrid = useCarouselStore((s) => s.setSnapGrid)
-  const setSnapCenter = useCarouselStore((s) => s.setSnapCenter)
-  const setSnapItems = useCarouselStore((s) => s.setSnapItems)
-  const setSnapMargins = useCarouselStore((s) => s.setSnapMargins)
-  const setAllSlidesBgColor = useCarouselStore((s) => s.setAllSlidesBgColor)
+  // Download the chosen Giphy result and drop it on the active slide. We
+  // embed the bytes (not the remote URL) so the .vpost stays portable.
+  const handleGifPick = useCallback(async (item: GiphyItem) => {
+    // Sticky toast while the bytes download — GIFs can be several MB and
+    // the picker closes immediately, so without this there's no sign
+    // anything is happening.
+    const loadingId = toast('Downloading GIF…', { duration: 0 })
+    try {
+      const blob = await downloadGif(item)
+      const safeTitle = item.title.replace(/[\\/:*?"<>|]/g, '_').slice(0, 80) || 'gif'
+      const file = new File([blob], `${safeTitle}.gif`, { type: 'image/gif' })
+      addMedia(file, item.width, item.height)
+    } catch (err) {
+      console.error('[giphy] download failed:', err)
+      toast(`Could not load that GIF: ${err instanceof Error ? err.message : String(err)}`, { kind: 'error' })
+    } finally {
+      dismissToast(loadingId)
+    }
+  }, [addMedia])
 
-  // Global background color — shared across slides. Reflects the shared color
-  // when all slides match, else shows the first slide's color.
-  const allBgSameColor = (() => {
-    if (slides.length === 0) return '#ffffff'
-    const first = slides[0]!.bgColor || '#ffffff'
-    return slides.every((s) => (s.bgColor || '#ffffff') === first) ? first : ''
-  })()
+  const showGrid = useTiovivoStore((s) => s.showGrid)
+  const gridSize = useTiovivoStore((s) => s.gridSize)
+  // Slider detents — every integer grid size where the cell evenly divides
+  // the current slide width OR height. These are the values that produce
+  // a whole number of grid cells across one (or both) axes, so the grid
+  // lands exactly on the edges. Recomputed whenever the slide dimensions
+  // change — switching presets immediately retargets the magnetic stops.
+  const gridDetents = useMemo(() => {
+    const out: number[] = []
+    for (let v = 4; v <= 400; v++) {
+      if (dimensions.width % v === 0 || dimensions.height % v === 0) out.push(v)
+    }
+    return out
+  }, [dimensions.width, dimensions.height])
+  // Hold Shift while dragging to bypass detent snapping and choose any
+  // exact px value. The ref is read inside onChange so the slider feels
+  // responsive without re-rendering on every key press.
+  const shiftHeldRef = useRef(false)
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { shiftHeldRef.current = e.shiftKey }
+    window.addEventListener('keydown', onKey)
+    window.addEventListener('keyup', onKey)
+    return () => {
+      window.removeEventListener('keydown', onKey)
+      window.removeEventListener('keyup', onKey)
+    }
+  }, [])
+  const snapGridToDetent = useCallback((raw: number) => {
+    if (shiftHeldRef.current || gridDetents.length === 0) return raw
+    // Tolerance in px of slider value, not viewport pixels — the detent feels
+    // "magnetic" when the user is within ±3 of it on the 4-400 scale.
+    let best = raw
+    let bestDist = 4
+    for (const d of gridDetents) {
+      const dist = Math.abs(raw - d)
+      if (dist < bestDist) { bestDist = dist; best = d }
+    }
+    return best
+  }, [gridDetents])
+  const gridOpacity = useTiovivoStore((s) => s.gridOpacity)
+  const setGridOpacity = useTiovivoStore((s) => s.setGridOpacity)
+  const showCenterGuides = useTiovivoStore((s) => s.showCenterGuides)
+  const snapGrid = useTiovivoStore((s) => s.snapGrid)
+  const snapCenter = useTiovivoStore((s) => s.snapCenter)
+  const snapItems = useTiovivoStore((s) => s.snapItems)
+  const snapMargins = useTiovivoStore((s) => s.snapMargins)
+  const seamlessSlides = useTiovivoStore((s) => s.seamlessSlides)
+  const setSeamlessSlides = useTiovivoStore((s) => s.setSeamlessSlides)
+  const slideRows = useTiovivoStore((s) => s.slideRows)
+  const setSlideRows = useTiovivoStore((s) => s.setSlideRows)
+  const showHiddenZone = useTiovivoStore((s) => s.showHiddenZone)
+  const setShowHiddenZone = useTiovivoStore((s) => s.setShowHiddenZone)
+  const showIgSafeArea = useTiovivoStore((s) => s.showIgSafeArea)
+  const safeAreaPlatform = useTiovivoStore((s) => s.safeAreaPlatform)
+  const setShowIgSafeArea = useTiovivoStore((s) => s.setShowIgSafeArea)
+  const previewMode = useTiovivoStore((s) => s.previewMode)
+  const setPreviewMode = useTiovivoStore((s) => s.setPreviewMode)
+  const playing = useTiovivoStore((s) => s.playing)
+  const deckMoves = useTiovivoStore((s) => s.items.some((i) => hasMotion(i)))
+  const setShowGrid = useTiovivoStore((s) => s.setShowGrid)
+  const setGridSize = useTiovivoStore((s) => s.setGridSize)
+  const setShowCenterGuides = useTiovivoStore((s) => s.setShowCenterGuides)
+  const setSnapGrid = useTiovivoStore((s) => s.setSnapGrid)
+  const setSnapCenter = useTiovivoStore((s) => s.setSnapCenter)
+  const setSnapItems = useTiovivoStore((s) => s.setSnapItems)
+  const setSnapMargins = useTiovivoStore((s) => s.setSnapMargins)
+  const setSlideName = useTiovivoStore((s) => s.setSlideName)
+  const setSlideExport = useTiovivoStore((s) => s.setSlideExport)
+  const setAllSlidesBgVibe = useTiovivoStore((s) => s.setAllSlidesBgVibe)
+  const setSlideBgVibe = useTiovivoStore((s) => s.setSlideBgVibe)
+  const randomizeAllSlideVibes = useTiovivoStore((s) => s.randomizeAllSlideVibes)
+  const randomizeSlideVibe = useTiovivoStore((s) => s.randomizeSlideVibe)
 
   const layoutRef = useRef<HTMLDivElement>(null)
   const addMediaInputRef = useRef<HTMLInputElement>(null)
-  const workspaceBgColor = useCarouselStore((s) => s.workspaceBgColor)
-  const setWorkspaceBgColor = useCarouselStore((s) => s.setWorkspaceBgColor)
+  const workspaceBgColor = useTiovivoStore((s) => s.workspaceBgColor)
+  const setWorkspaceBgColor = useTiovivoStore((s) => s.setWorkspaceBgColor)
 
   useEffect(() => {
     const el = layoutRef.current
@@ -150,6 +1150,10 @@ export default function App() {
   const onFiles = useCallback(
     async (files: FileList | null) => {
       if (!files?.length) return
+      // Files this renderer can't decode (HEIC, unsupported codecs, corrupt
+      // data) used to land as invisible 0×0 items that then broke export.
+      // Skip them and say so once for the whole drop.
+      const failed: string[] = []
       for (const file of Array.from(files)) {
         if (!file.type.startsWith('image/') && !file.type.startsWith('video/')) continue
         const url = URL.createObjectURL(file)
@@ -157,27 +1161,40 @@ export default function App() {
           const v = document.createElement('video')
           v.preload = 'metadata'
           v.src = url
-          await new Promise<void>((res, rej) => {
-            v.onloadedmetadata = () => res()
-            v.onerror = () => rej(new Error('video'))
-          }).catch(() => {})
-          const nw = v.videoWidth || dimensions.width * 0.5
-          const nh = v.videoHeight || dimensions.height * 0.5
+          const ok = await new Promise<boolean>((res) => {
+            v.onloadedmetadata = () => res(true)
+            v.onerror = () => res(false)
+          })
+          const nw = v.videoWidth
+          const nh = v.videoHeight
+          v.removeAttribute('src')
+          v.load()
           URL.revokeObjectURL(url)
+          // No picture track (or none we can decode) → nothing to place.
+          if (!ok || !nw || !nh) { failed.push(file.name); continue }
           addMedia(file, nw, nh)
           continue
         }
         const img = new Image()
         img.src = url
-        await new Promise<void>((res, rej) => {
-          img.onload = () => res()
-          img.onerror = () => rej(new Error('img'))
-        }).catch(() => { URL.revokeObjectURL(url) })
-        addMedia(file, img.naturalWidth, img.naturalHeight)
+        const ok = await new Promise<boolean>((res) => {
+          img.onload = () => res(true)
+          img.onerror = () => res(false)
+        })
         URL.revokeObjectURL(url)
+        if (!ok || !img.naturalWidth || !img.naturalHeight) { failed.push(file.name); continue }
+        addMedia(file, img.naturalWidth, img.naturalHeight)
+      }
+      if (failed.length) {
+        toast(
+          `Couldn't read ${failed.length === 1 ? `"${failed[0]}"` : `${failed.length} files`} — ` +
+          'the format isn\'t supported (e.g. HEIC, some video codecs) or the file is damaged.' +
+          (failed.length > 1 ? `\n${failed.join('\n')}` : ''),
+          { kind: 'error' },
+        )
       }
     },
-    [addMedia, dimensions.height, dimensions.width],
+    [addMedia],
   )
 
   /* ---- Canvas drag-and-drop ---- */
@@ -210,13 +1227,36 @@ export default function App() {
     [onFiles],
   )
 
+  /* ---- App-internal clipboard (selected items) ---- */
+  // `items` are deep copies sans id/slideId. `offsetCount` increases with each
+  // successive paste so a chain of Cmd+V doesn't stack copies on top of each
+  // other.
+  const clipboardRef = useRef<{
+    items: Omit<PlacedMedia, 'id' | 'slideId'>[]
+    offsetCount: number
+  } | null>(null)
+  // Loading / resetting a project revokes every blob: URL the old document
+  // used, so copied media would paste as dead images (and then fail Save).
+  // Drop those entries; text and shapes carry no blob and survive.
+  const dropClipboardMedia = useCallback(() => {
+    const clip = clipboardRef.current
+    if (!clip) return
+    const keep = clip.items.filter(
+      (it) => !it.src.startsWith('blob:') && !it.coverImageSrc?.startsWith('blob:'),
+    )
+    clipboardRef.current = keep.length ? { ...clip, items: keep } : null
+  }, [])
+
   /* ---- Keyboard shortcuts ---- */
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      const tag = (e.target as HTMLElement).tagName
-      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
+      // Text fields own their keys; sliders / checkboxes / swatches don't.
+      if (isTextEntryTarget(e.target)) return
+      // Nothing may act behind a modal dialog (Backspace deleted canvas
+      // items under "Discard changes?"), nor on the live store mid-export.
+      if (useFeedbackStore.getState().confirm || exportingRef.current) return
 
-      const st = useCarouselStore.getState()
+      const st = useTiovivoStore.getState()
 
       // Undo / redo (allowed even in crop mode so user can escape).
       if ((e.metaKey || e.ctrlKey) && (e.key === 'z' || e.key === 'Z')) {
@@ -234,6 +1274,55 @@ export default function App() {
       // Block shortcuts during crop mode
       if (st.cropItemId) return
 
+      // Copy selected items into the app clipboard.
+      if ((e.metaKey || e.ctrlKey) && (e.key === 'c' || e.key === 'C')) {
+        if (!st.selectedIds.length) return
+        const selected = st.items.filter((it) => st.selectedIds.includes(it.id))
+        clipboardRef.current = {
+          items: selected.map(({ id: _id, slideId: _sid, ...rest }) => {
+            void _id; void _sid
+            return rest
+          }),
+          offsetCount: 1,
+        }
+        e.preventDefault()
+        return
+      }
+
+      // Cut = copy + remove.
+      if ((e.metaKey || e.ctrlKey) && (e.key === 'x' || e.key === 'X')) {
+        if (!st.selectedIds.length) return
+        const selected = st.items.filter((it) => st.selectedIds.includes(it.id))
+        clipboardRef.current = {
+          items: selected.map(({ id: _id, slideId: _sid, ...rest }) => {
+            void _id; void _sid
+            return rest
+          }),
+          offsetCount: 1,
+        }
+        st.removeItems(st.selectedIds)
+        e.preventDefault()
+        return
+      }
+
+      // Paste — drops clones onto the active slide with a growing offset so
+      // repeated pastes don't pile on the same spot.
+      if ((e.metaKey || e.ctrlKey) && (e.key === 'v' || e.key === 'V')) {
+        const clip = clipboardRef.current
+        if (!clip || !clip.items.length) return
+        const dx = 24 * clip.offsetCount
+        const dy = 24 * clip.offsetCount
+        const templates = clip.items.map((it) => ({
+          ...it,
+          x: it.x + dx,
+          y: it.y + dy,
+        }))
+        st.pasteItems(templates)
+        clip.offsetCount += 1
+        e.preventDefault()
+        return
+      }
+
       // [ and ] to move selected item(s) to prev/next slide
       if ((e.key === '[' || e.key === ']') && st.selectedIds.length) {
         const primaryId = st.selectedIds[0]!
@@ -244,7 +1333,9 @@ export default function App() {
         const targetIdx = e.key === '[' ? currentIdx - 1 : currentIdx + 1
         if (targetIdx < 0 || targetIdx >= st.slides.length) return
         const targetSlideId = st.slides[targetIdx]!.id
-        st.selectedIds.forEach((id) => st.moveItemToSlide(id, targetSlideId))
+        // One updateItems call = one undo step for the whole selection
+        // (moveItemToSlide per item made Undo walk them back one by one).
+        st.updateItems(st.selectedIds.map((id) => ({ id, patch: { slideId: targetSlideId } })))
         e.preventDefault()
         return
       }
@@ -258,8 +1349,13 @@ export default function App() {
     window.addEventListener('keydown', onKeyDown)
     // In Electron, the Edit menu's Cmd/Ctrl+Z accelerator fires before the
     // renderer sees the keydown — so also listen for IPC events from main.
-    const offUndo = window.electronAPI?.onUndo(() => useCarouselStore.getState().undo())
-    const offRedo = window.electronAPI?.onRedo(() => useCarouselStore.getState().redo())
+    // runUndoRedo sends it to a focused text field's own history instead.
+    const onMenuUndoRedo = (kind: 'undo' | 'redo') => {
+      if (useFeedbackStore.getState().confirm || exportingRef.current) return
+      runUndoRedo(kind)
+    }
+    const offUndo = window.electronAPI?.onUndo(() => onMenuUndoRedo('undo'))
+    const offRedo = window.electronAPI?.onRedo(() => onMenuUndoRedo('redo'))
     return () => {
       window.removeEventListener('keydown', onKeyDown)
       offUndo?.()
@@ -268,23 +1364,120 @@ export default function App() {
   }, [])
 
   /* ---- Export all slides ---- */
-  const exportAll = useCallback(async () => {
-    const st = useCarouselStore.getState()
+  // `auto` = an unattended export (a connected agent): the folder and prefix
+  // are given, so no folder picker and no blocking prompts.
+  // `mode` 'photos' = a JPEG still of every slide (TikTok photo mode,
+  // Instagram): video slides contribute their cover frame.
+  const exportAll = useCallback(async (
+    auto?: { dir: string; prefix: string },
+    mode: 'slides' | 'photos' = 'slides',
+  ): Promise<{ written: string[]; videoErrors: number } | undefined> => {
+    const st = useTiovivoStore.getState()
     if (!st.slides.length || !stageRef.current) return
     if (!window.electronAPI) {
       console.error('[export] window.electronAPI is undefined — run inside the Electron app')
-      alert('Export only works in the desktop app, not the browser.')
+      toast('Export only works in the desktop app, not the browser.', { kind: 'error' })
       return
     }
     setExporting(true)
+    exportingRef.current = true
     setExportProgress('')
     st.setSelectedIds([])
-    const prefix = sanitizeFilename(exportPrefix.trim()) || 'carousel'
+    const prefix = auto?.prefix ?? (sanitizeFilename(exportPrefix.trim()) || 'tiovivo')
     const written: string[] = []
     let videoErrors = 0
     try {
-      const dir = await window.electronAPI.pickDirectory()
+      const dir = auto?.dir ?? await window.electronAPI.pickDirectory()
       if (!dir) return
+
+      // One-shot diagnostic dump so the user can see which encoder was
+      // chosen and (importantly) why the GPU candidates were rejected.
+      // Open View → Toggle Developer Tools to view. Also surface the
+      // chosen encoder in the progress UI so it's visible without opening
+      // dev tools.
+      let chosenEncoder: string | null = null
+      try {
+        const diag = await window.electronAPI.getEncoderDiagnostics?.()
+        if (diag) {
+          chosenEncoder = diag.chosen
+          console.group('[ffmpeg] encoder diagnostics')
+          console.log('binary:', diag.ffmpegPath)
+          console.log('compiled h264 encoders:', diag.availableH264Encoders.join(', ') || '(none)')
+          console.log('chosen:', diag.chosen)
+          for (const a of diag.probeAttempts) {
+            console.log(
+              `probe ${a.encoder}: exit=${a.exitCode}` +
+              (a.stderr ? `\nstderr tail:\n${a.stderr.slice(-1500)}` : ''),
+            )
+          }
+          console.groupEnd()
+        }
+      } catch (err) {
+        console.warn('[ffmpeg] diagnostics unavailable:', err)
+      }
+      const encoderSuffix = chosenEncoder ? ` (${chosenEncoder})` : ''
+
+      // ---- Detect source FPS for every video item ----
+      // The export framerate dictates ffmpeg's input rate; if it doesn't
+      // match the source, the output will be sped up / slowed down / get
+      // duplicated frames. We measure each video's native rate via rVFC,
+      // pick the most common as the project fps, and warn on mismatches.
+      setExportProgress('Detecting video frame rates…')
+      const videoFpsByItemId = new Map<string, number>()
+      const videoItems = st.items.filter((it) => it.type === 'video')
+      for (const it of videoItems) {
+        const el = videoElements.get(it.id)
+        if (!el) continue
+        const fps = await detectVideoFps(el)
+        if (fps && isFinite(fps)) videoFpsByItemId.set(it.id, fps)
+      }
+
+      // Decide a project-wide fps: median of detected rates, snapped to a
+      // common standard rate. Falls back to 30 when nothing was detected
+      // (e.g. videos still loading) so behaviour matches the previous build.
+      const detectedRates = Array.from(videoFpsByItemId.values())
+      let projectFps = 30
+      if (detectedRates.length > 0) {
+        const sorted = [...detectedRates].sort((a, b) => a - b)
+        const median = sorted[Math.floor(sorted.length / 2)]!
+        projectFps = roundToCommonFps(median)
+      }
+      console.log(`[export] project fps = ${projectFps} (detected: ${detectedRates.map(r => r.toFixed(2)).join(', ') || 'none'})`)
+
+      // Collect any slides whose videos disagree among themselves OR with
+      // the project fps. We surface these to the user as a single combined
+      // warning so they can cancel before we burn 90 s on bad output.
+      const mixedReports: string[] = []
+      for (let si = 0; si < st.slides.length; si++) {
+        const slide = st.slides[si]!
+        if (slide.exportEnabled === false) continue
+        const slideVideos = videoItems.filter((it) => it.slideId === slide.id)
+        const slideRates = slideVideos
+          .map((it) => videoFpsByItemId.get(it.id))
+          .filter((r): r is number => typeof r === 'number')
+        if (slideRates.length === 0) continue
+        const allMatch = slideRates.every((r) => fpsRoughlyEqual(r, projectFps))
+        if (!allMatch) {
+          const rounded = slideRates.map(roundToCommonFps)
+          const unique = Array.from(new Set(rounded)).sort((a, b) => a - b)
+          mixedReports.push(`  • Slide ${si + 1}: ${unique.join(' / ')} fps`)
+        }
+      }
+
+      if (mixedReports.length > 0 && !auto) {
+        const proceed = await confirmDialog({
+          title: 'Mixed video frame rates',
+          message:
+            mixedReports.join('\n') +
+            `\n\nExport will use ${projectFps} fps. Sources at other rates may appear ` +
+            `slowed down, sped up, or have repeated frames.`,
+          confirmLabel: 'Export anyway',
+        })
+        if (!proceed) {
+          setExportProgress('')
+          return
+        }
+      }
 
       const pngFiles: { name: string; buffer: Uint8Array }[] = []
 
@@ -293,19 +1486,26 @@ export default function App() {
         if (slide.exportEnabled === false) continue
         const slideId = slide.id
         const n = String(i + 1).padStart(2, '0')
-        const hasVideo = st.items.some((it) => it.slideId === slideId && it.type === 'video')
+        // Optional slide-name segment between prefix and number. Skipped
+        // silently when the toggle is off or the slide has no custom name
+        // → no `Slide_1` filler segments, no filename collisions.
+        const slideNameSeg = includeSlideNameInFilename && slide.name?.trim()
+          ? `_${sanitizeFilenameSegment(slide.name.trim())}`
+          : ''
+        const hasVideo = mode === 'slides' && slideHasAnimatedExport(st.items, slideId)
 
         if (hasVideo) {
           // Video slide → export as MP4
-          setExportProgress(`Encoding slide ${i + 1} video...`)
-          const filename = `${prefix}_${n}.mp4`
+          setExportProgress(`Encoding slide ${i + 1} video${encoderSuffix}...`)
+          const filename = `${prefix}${slideNameSeg}_${n}.mp4`
           const outputPath = `${dir}/${filename}`
           try {
             const result = await stageRef.current!.exportSlideVideo(
               slideId,
               outputPath,
-              30,
-              (pct) => setExportProgress(`Encoding slide ${i + 1}: ${Math.round(pct)}%`),
+              projectFps,
+              (pct) => setExportProgress(`Encoding slide ${i + 1}: ${Math.round(pct)}%${encoderSuffix}`),
+              (dataUrl) => setExportPreview(dataUrl),
             )
             if (result) written.push(filename)
             else videoErrors++
@@ -319,9 +1519,12 @@ export default function App() {
           await new Promise<void>((r) =>
             requestAnimationFrame(() => requestAnimationFrame(() => r())),
           )
-          const blob = await stageRef.current!.exportSlidePng(slideId)
+          const png = mode === 'photos'
+            ? await stageRef.current!.exportSlideStill(slideId)
+            : await stageRef.current!.exportSlidePng(slideId)
+          const blob = png && mode === 'photos' ? await pngToJpeg(png) : png
           if (blob) {
-            const filename = `${prefix}_${n}.png`
+            const filename = `${prefix}${slideNameSeg}_${n}.${mode === 'photos' ? 'jpg' : 'png'}`
             pngFiles.push({
               name: filename,
               buffer: new Uint8Array(await blob.arrayBuffer()),
@@ -336,19 +1539,64 @@ export default function App() {
       }
       console.log(`[export] wrote ${written.length} file(s) to ${dir}`, written)
       if (videoErrors > 0) {
-        alert(
+        toast(
           `Exported ${written.length} file(s) to:\n${dir}\n\n` +
           `${videoErrors} video slide(s) failed. Check the dev console (View → Toggle Developer Tools) for details.`,
+          { kind: 'error' },
         )
       } else if (written.length > 0) {
-        alert(`Exported ${written.length} file(s) to:\n${dir}`)
+        toast(`Exported ${written.length} file(s) to:\n${dir}`, { kind: 'success' })
       } else {
-        alert(`Nothing was exported. The slide list is empty or every slide failed.`)
+        toast('Nothing was exported. The slide list is empty or every slide failed.', { kind: 'error' })
       }
     } catch (err) {
       console.error('[export] failed:', err)
-      alert(`Export failed: ${err instanceof Error ? err.message : String(err)}`)
+      toast(`Export failed: ${err instanceof Error ? err.message : String(err)}`, { kind: 'error' })
     } finally {
+      exportingRef.current = false
+      setExporting(false)
+      setExportProgress('')
+    }
+    return { written, videoErrors }
+  }, [exportPrefix, includeSlideNameInFilename])
+
+  /* ---- Export the deck as ONE video (Reel / TikTok) ---- */
+  const exportReel = useCallback(async (
+    transition: ReelTransition,
+    auto?: { dir: string; prefix: string },
+  ): Promise<string | null> => {
+    const api = window.electronAPI
+    if (!stageRef.current) return null
+    if (!api) {
+      toast('Export only works in the desktop app, not the browser.', { kind: 'error' })
+      return null
+    }
+    const prefix = auto?.prefix ?? (sanitizeFilename(exportPrefix.trim()) || 'tiovivo')
+    setExporting(true)
+    exportingRef.current = true
+    setExportProgress('')
+    useTiovivoStore.getState().setSelectedIds([])
+    try {
+      const outputPath = auto
+        ? `${auto.dir}/${prefix}_video.mp4`
+        : await api.saveFile({ defaultName: `${prefix}_video.mp4`, filters: [{ name: 'MP4 video', extensions: ['mp4'] }] })
+      if (!outputPath) return null
+      setExportProgress('Encoding video: 0%')
+      const result = await stageRef.current.exportDeckVideo(
+        outputPath,
+        { transition, fps: 30 },
+        (pct) => setExportProgress(`Encoding video: ${Math.round(pct)}%`),
+        (dataUrl) => setExportPreview(dataUrl),
+      )
+      if (result) toast(`Video exported to:\n${result}`, { kind: 'success' })
+      else toast('Video export failed. Check the dev console (View → Toggle Developer Tools) for details.', { kind: 'error' })
+      return result
+    } catch (err) {
+      console.error('[export] video failed:', err)
+      toast(`Export failed: ${err instanceof Error ? err.message : String(err)}`, { kind: 'error' })
+      return null
+    } finally {
+      exportingRef.current = false
       setExporting(false)
       setExportProgress('')
     }
@@ -356,46 +1604,67 @@ export default function App() {
 
   /* ---- Export a single slide on demand (per-slide export button) ---- */
   const exportSingleSlide = useCallback(async (slideId: string) => {
-    const st = useCarouselStore.getState()
+    const st = useTiovivoStore.getState()
     if (!stageRef.current) return
     if (!window.electronAPI) {
-      alert('Export only works in the desktop app, not the browser.')
+      toast('Export only works in the desktop app, not the browser.', { kind: 'error' })
       return
     }
     const idx = st.slides.findIndex((s) => s.id === slideId)
     if (idx < 0) return
-    const prefix = sanitizeFilename(exportPrefix.trim()) || 'carousel'
+    const slide = st.slides[idx]!
+    const prefix = sanitizeFilename(exportPrefix.trim()) || 'tiovivo'
     const n = String(idx + 1).padStart(2, '0')
-    const hasVideo = st.items.some((it) => it.slideId === slideId && it.type === 'video')
+    const slideNameSeg = includeSlideNameInFilename && slide.name?.trim()
+      ? `_${sanitizeFilenameSegment(slide.name.trim())}`
+      : ''
+    const hasVideo = slideHasAnimatedExport(st.items, slideId)
     setExporting(true)
+    exportingRef.current = true
     setExportProgress(`Exporting slide ${idx + 1}...`)
     st.setSelectedIds([])
     try {
       if (hasVideo) {
-        const defaultName = `${prefix}_${n}.mp4`
+        const defaultName = `${prefix}${slideNameSeg}_${n}.mp4`
         const outputPath = await window.electronAPI.saveFile({
           defaultName,
           filters: [{ name: 'MP4 video', extensions: ['mp4'] }],
         })
         if (!outputPath) return
+        // Detect fps for the videos on this slide so the single-slide
+        // export honours the same fps-from-source heuristic as Export all.
+        const slideVideoItems = st.items.filter((it) => it.slideId === slideId && it.type === 'video')
+        const detectedRates: number[] = []
+        for (const it of slideVideoItems) {
+          const el = videoElements.get(it.id)
+          if (!el) continue
+          const fps = await detectVideoFps(el)
+          if (fps && isFinite(fps)) detectedRates.push(fps)
+        }
+        let slideFps = 30
+        if (detectedRates.length > 0) {
+          const sorted = [...detectedRates].sort((a, b) => a - b)
+          slideFps = roundToCommonFps(sorted[Math.floor(sorted.length / 2)]!)
+        }
         setExportProgress(`Encoding slide ${idx + 1}: 0%`)
         const result = await stageRef.current.exportSlideVideo(
           slideId,
           outputPath,
-          30,
+          slideFps,
           (pct) => setExportProgress(`Encoding slide ${idx + 1}: ${Math.round(pct)}%`),
+          (dataUrl) => setExportPreview(dataUrl),
         )
-        if (!result) alert('Video export failed. Check the dev console for details.')
+        if (!result) toast('Video export failed. Check the dev console for details.', { kind: 'error' })
       } else {
         await new Promise<void>((r) =>
           requestAnimationFrame(() => requestAnimationFrame(() => r())),
         )
         const blob = await stageRef.current.exportSlidePng(slideId)
         if (!blob) {
-          alert('Export failed.')
+          toast('Export failed.', { kind: 'error' })
           return
         }
-        const defaultName = `${prefix}_${n}.png`
+        const defaultName = `${prefix}${slideNameSeg}_${n}.png`
         const buffer = new Uint8Array(await blob.arrayBuffer())
         const path = await window.electronAPI.saveFile({
           defaultName,
@@ -406,21 +1675,49 @@ export default function App() {
       }
     } catch (err) {
       console.error('[export-single] failed:', err)
-      alert(`Export failed: ${err instanceof Error ? err.message : String(err)}`)
+      toast(`Export failed: ${err instanceof Error ? err.message : String(err)}`, { kind: 'error' })
     } finally {
+      exportingRef.current = false
       setExporting(false)
       setExportProgress('')
     }
-  }, [exportPrefix])
+  }, [exportPrefix, includeSlideNameInFilename])
 
   /* ---- Save / Open project ---- */
-  const handleSave = useCallback(async (forcePrompt: boolean) => {
+  // Returns true when the project was actually written to disk, false if the
+  // user cancelled the file dialog or save failed. The close-orchestration
+  // path uses the boolean to decide whether to proceed with closing the window.
+  // `targetPath` = save there without a dialog (main has already allow-listed
+  // it — used by the MCP save_project tool).
+  const handleSave = useCallback(async (forcePrompt: boolean, targetPath?: string): Promise<boolean> => {
     if (!window.electronAPI) {
-      alert('Saving projects only works in the desktop app, not the browser.')
-      return
+      toast('Saving projects only works in the desktop app, not the browser.', { kind: 'error' })
+      return false
     }
-    const st = useCarouselStore.getState()
+    const st = useTiovivoStore.getState()
+    // The save writes THIS snapshot; edits made while it's in flight (preview
+    // render, file dialog, disk write) aren't in the file, so they must keep
+    // the document dirty.
+    const savedRevision = st.revision
+    const markSaved = () => {
+      if (useTiovivoStore.getState().revision === savedRevision) {
+        useTiovivoStore.getState().setDirty(false)
+      }
+    }
     try {
+      // Render the Fit-view snapshot (all slides side-by-side) so the .vpost
+      // carries its own preview image. Failure here is non-fatal — we still
+      // save the project, just without the embedded preview.
+      const preview = await generateProjectPreview(
+        st.slides,
+        st.items,
+        st.dimensions,
+        resolveWorkspaceBg(st.workspaceBgColor, useThemeStore.getState().theme),
+      ).catch((err) => {
+        console.warn('[save] preview generation failed:', err)
+        return null
+      })
+
       const blob = await serializeProject(
         {
           slides: st.slides,
@@ -430,15 +1727,38 @@ export default function App() {
           customWidth: st.customWidth,
           customHeight: st.customHeight,
           workspaceBgColor: st.workspaceBgColor,
+          preview,
+          guides: {
+            showGrid: st.showGrid,
+            gridSize: st.gridSize,
+            gridOpacity: st.gridOpacity,
+            showCenterGuides: st.showCenterGuides,
+            seamlessSlides: st.seamlessSlides,
+            showHiddenZone: st.showHiddenZone,
+            showIgSafeArea: st.showIgSafeArea,
+            safeAreaPlatform: st.safeAreaPlatform,
+            marginPct: st.marginPct,
+            snapGrid: st.snapGrid,
+            snapCenter: st.snapCenter,
+            snapItems: st.snapItems,
+            snapMargins: st.snapMargins,
+          },
+          lastTextStyle: st.lastTextStyle,
         },
         async (src) => (await fetch(src)).blob(),
       )
       const buffer = new Uint8Array(await blob.arrayBuffer())
 
-      const existing = projectPathRef.current
+      const existing = targetPath ?? projectPathRef.current
       if (existing && !forcePrompt) {
         await window.electronAPI.writeFile({ path: existing, buffer })
-        return
+        if (targetPath) {
+          projectPathRef.current = targetPath
+          setProjectPath(targetPath)
+        }
+        markSaved()
+        void refreshRecents()
+        return true
       }
 
       const defaultName = existing
@@ -449,22 +1769,31 @@ export default function App() {
         filters: VPOST_FILTER,
         buffer,
       })
-      if (path) setProjectPath(path)
+      if (path) {
+        setProjectPath(path)
+        markSaved()
+        void refreshRecents()
+        return true
+      }
+      // User cancelled the file picker — leave isDirty alone, signal caller
+      // so the close-orchestration path keeps the window open.
+      return false
     } catch (err) {
       console.error('[save] failed:', err)
-      alert(`Save failed: ${err instanceof Error ? err.message : String(err)}`)
+      toast(`Save failed: ${err instanceof Error ? err.message : String(err)}`, { kind: 'error' })
+      return false
     }
-  }, [])
+  }, [refreshRecents])
 
   const loadFromBuffer = useCallback((buffer: Uint8Array, path: string) => {
+    const assetUrls = new Map<string, string>()
     try {
       const { manifest, assetBlobs } = deserializeProject(buffer)
-      const assetUrls = new Map<string, string>()
       for (const [id, blob] of assetBlobs) {
         assetUrls.set(id, URL.createObjectURL(blob))
       }
       const items = hydrateItems(manifest, assetUrls)
-      useCarouselStore.getState().loadProjectState({
+      useTiovivoStore.getState().loadProjectState({
         slides: manifest.slides,
         items,
         dimensions: manifest.dimensions,
@@ -472,45 +1801,207 @@ export default function App() {
         customWidth: manifest.customWidth,
         customHeight: manifest.customHeight,
         workspaceBgColor: manifest.workspaceBgColor,
+        guides: manifest.guides,
+        lastTextStyle: manifest.lastTextStyle,
       })
+      dropClipboardMedia()
       setProjectPath(path)
+      setStartOpen(false)
     } catch (err) {
+      // The current project is untouched — free the URLs minted for the
+      // file that failed to load.
+      for (const url of assetUrls.values()) URL.revokeObjectURL(url)
       console.error('[open] failed:', err)
-      alert(`Open failed: ${err instanceof Error ? err.message : String(err)}`)
+      toast(`Open failed: ${err instanceof Error ? err.message : String(err)}`, { kind: 'error' })
     }
-  }, [])
+  }, [dropClipboardMedia])
+
+  /** Gate for everything that replaces the open document (New, Open, Open
+   *  Recent, a .vpost opened from Finder / Explorer, Reload). Resolves true
+   *  when it's fine to proceed: nothing unsaved, the user saved, or chose
+   *  Don't Save. These used to throw away unsaved work without asking. */
+  const confirmReplaceDocument = useCallback(async (doing: string): Promise<boolean> => {
+    if (exportingRef.current) {
+      toast('Wait for the export to finish first.', { kind: 'error' })
+      return false
+    }
+    if (!useTiovivoStore.getState().isDirty) return true
+    const name = projectPathRef.current?.split(/[/\\]/).pop() || 'Untitled'
+    const choice = await choiceDialog({
+      title: 'Save changes?',
+      message: `Do you want to save the changes you made to "${name}" before ${doing}?\n` +
+        'Your changes will be lost if you don\'t save them.',
+      confirmLabel: 'Save',
+      altLabel: 'Don\'t Save',
+    })
+    if (choice === 'alt') return true
+    if (choice === 'confirm') return handleSave(false) // false: save dialog cancelled / failed
+    return false
+  }, [handleSave])
 
   const handleOpen = useCallback(async () => {
     if (!window.electronAPI) {
-      alert('Opening projects only works in the desktop app, not the browser.')
+      toast('Opening projects only works in the desktop app, not the browser.', { kind: 'error' })
+      return
+    }
+    if (exportingRef.current) {
+      toast('Wait for the export to finish first.', { kind: 'error' })
       return
     }
     try {
+      // Pick first, then ask: cancelling the picker shouldn't cost a prompt.
       const result = await window.electronAPI.openFile({ filters: VPOST_FILTER })
       if (!result) return
+      if (!(await confirmReplaceDocument('opening another project'))) return
       loadFromBuffer(result.buffer, result.path)
+      void refreshRecents()
     } catch (err) {
       console.error('[open] failed:', err)
-      alert(`Open failed: ${err instanceof Error ? err.message : String(err)}`)
+      toast(`Open failed: ${err instanceof Error ? err.message : String(err)}`, { kind: 'error' })
     }
-  }, [loadFromBuffer])
+  }, [confirmReplaceDocument, loadFromBuffer, refreshRecents])
 
-  const handleNew = useCallback(() => {
-    if (!window.confirm('Discard current project and start fresh?')) return
-    useCarouselStore.getState().resetProject()
+  const handleNew = useCallback(async () => {
+    // Only asks when there are unsaved changes — a clean document is
+    // replaced straight away.
+    if (!(await confirmReplaceDocument('starting a new project'))) return
+    useTiovivoStore.getState().resetProject()
+    dropClipboardMedia()
     setProjectPath(null)
-  }, [])
+    setStartOpen(true)
+  }, [confirmReplaceDocument, dropClipboardMedia])
+
+  /** Replace the document with a fresh one from the start screen — a blank
+   *  format or a template deck. Loaded as a clean document: no undo history
+   *  pointing back at the previous project, nothing to save yet. */
+  const startDocument = useCallback(async (source: Exclude<PresetId, 'custom'> | TemplateDeck): Promise<boolean> => {
+    if (!(await confirmReplaceDocument('starting a new project'))) return false
+    const deck: TemplateDeck = typeof source === 'string'
+      ? {
+          presetId: source,
+          dimensions: { ...PRESETS[source] },
+          slides: [{ id: crypto.randomUUID(), bgColor: '#ffffff', exportEnabled: true }],
+          items: [],
+        }
+      : source
+    useTiovivoStore.getState().loadProjectState({
+      slides: deck.slides,
+      items: deck.items,
+      dimensions: deck.dimensions,
+      presetId: deck.presetId,
+      customWidth: deck.dimensions.width,
+      customHeight: deck.dimensions.height,
+    })
+    dropClipboardMedia()
+    projectPathRef.current = null
+    setProjectPath(null)
+    setStartOpen(false)
+    useBrandStore.getState().markDrawn()
+    // The canvas was laid out for the previous format — refit once it has
+    // re-rendered with the new slides.
+    requestAnimationFrame(() => requestAnimationFrame(() => stageRef.current?.fitToScreen()))
+    return true
+  }, [confirmReplaceDocument, dropClipboardMedia])
+
+  const handleReload = useCallback(async () => {
+    if (await confirmReplaceDocument('reloading')) location.reload()
+  }, [confirmReplaceDocument])
+
+  /* ---- Connected agent (built-in MCP server) ---- */
+  // Tool calls arrive from main one message at a time, but an agent may send
+  // several requests at once — run them strictly in order, they all act on
+  // the one live document.
+  const mcpQueueRef = useRef<Promise<unknown>>(Promise.resolve())
+  useEffect(() => {
+    const api = window.electronAPI
+    if (!api?.onMcpCall) return
+    const ctx: McpContext = {
+      renderSlidePng: async (slideId) => stageRef.current?.exportSlidePng(slideId) ?? null,
+      isBusy: () => exportingRef.current,
+      projectPath: () => projectPathRef.current,
+      saveTo: (path) => handleSave(false, path ?? undefined),
+      exportTo: async (dir, prefix, as, transition) => {
+        if (as === 'video') {
+          const file = await exportReel(transition, { dir, prefix })
+          return { written: file ? [`${prefix}_video.mp4`] : [], videoErrors: file ? 0 : 1 }
+        }
+        return (await exportAll({ dir, prefix }, as)) ?? { written: [], videoErrors: 0 }
+      },
+      newProject: () => {
+        useTiovivoStore.getState().resetProject()
+        dropClipboardMedia()
+        projectPathRef.current = null
+        setProjectPath(null)
+      },
+      listFonts: () => listSystemFonts(),
+    }
+    const offCall = api.onMcpCall((call) => {
+      // An agent is editing — show the canvas it's working on.
+      if (call.mutates) setStartOpen(false)
+      const run = () => runMcpTool(call.tool, call.args, call.mutates, ctx)
+        .then((result) => api.sendMcpResult({ id: call.id, ok: true, result }))
+        .catch((err) => api.sendMcpResult({
+          id: call.id, ok: false, error: err instanceof Error ? err.message : String(err),
+        }))
+      mcpQueueRef.current = mcpQueueRef.current.then(run, run)
+    })
+    const offOpen = api.onOpenMcp?.(() => setMcpOpen(true))
+    return () => { offCall(); offOpen?.() }
+  }, [exportAll, exportReel, handleSave, dropClipboardMedia])
+
+  /* ---- File-menu keyboard shortcuts ---- */
+  // On macOS the native menu's accelerators (Cmd+N / O / S / Shift+S) fire
+  // these flows via IPC. On Windows / Linux we removed the native menu in
+  // favour of the in-app MenuBar, so we wire the same shortcuts manually
+  // here. Skip on Mac to avoid double-firing.
+  useEffect(() => {
+    if (/Mac/.test(navigator.userAgent)) return
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey)) return
+      if (isTextEntryTarget(e.target)) return
+      // Not behind an open dialog, not while export walks the live state.
+      if (useFeedbackStore.getState().confirm || exportingRef.current) return
+      if (e.key === 'n' || e.key === 'N') {
+        e.preventDefault(); void handleNew()
+      } else if (e.key === 'o' || e.key === 'O') {
+        e.preventDefault(); void handleOpen()
+      } else if (e.key === 's' || e.key === 'S') {
+        e.preventDefault(); void handleSave(e.shiftKey)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [handleNew, handleOpen, handleSave])
 
   /* ---- Wire File menu IPC + window title ---- */
   useEffect(() => {
     const api = window.electronAPI
     if (!api) return
-    const offNew = api.onNewProject(() => handleNew())
-    const offOpen = api.onOpenProject(() => handleOpen())
+    const offNew = api.onNewProject(() => { void handleNew() })
+    const offOpen = api.onOpenProject(() => { void handleOpen() })
     const offSave = api.onSaveProject(() => handleSave(false))
     const offSaveAs = api.onSaveProjectAs(() => handleSave(true))
+    // Open Recent (both menus) and Finder / Explorer opens all arrive here,
+    // so this one gate covers them.
     const offOpenFile = api.onOpenProjectFile(({ path, buffer }) => {
-      loadFromBuffer(buffer, path)
+      // Main has already pushed this path onto the recents list; sync the
+      // in-app MenuBar so the next File → Open Recent reflects it (no-op on
+      // mac, where refreshRecents short-circuits).
+      void refreshRecents()
+      void confirmReplaceDocument('opening another project').then((ok) => {
+        if (ok) loadFromBuffer(buffer, path)
+      })
+    })
+    // Save-on-quit orchestration. Main asks if we're dirty (with a 1.5s
+    // timeout on its side, so respond synchronously from the store snapshot).
+    const offQueryDirty = api.onQueryDirty?.(() => {
+      api.sendDirtyResponse(useTiovivoStore.getState().isDirty)
+    })
+    // Main asked us to save and report whether the save actually happened.
+    // handleSave returns false on file-picker cancel or write failure — in
+    // either case main keeps the window open.
+    const offSaveAndClose = api.onSaveAndClose?.(() => {
+      handleSave(false).then((ok) => api.sendSaveResult(ok))
     })
     return () => {
       offNew?.()
@@ -518,8 +2009,10 @@ export default function App() {
       offSave?.()
       offSaveAs?.()
       offOpenFile?.()
+      offQueryDirty?.()
+      offSaveAndClose?.()
     }
-  }, [handleNew, handleOpen, handleSave, loadFromBuffer])
+  }, [handleNew, handleOpen, handleSave, loadFromBuffer, refreshRecents, confirmReplaceDocument])
 
   useEffect(() => {
     // Cross-platform basename split: on Windows, paths use backslashes — splitting
@@ -536,272 +2029,1241 @@ export default function App() {
   /* ---- Active slide indicator ---- */
   const activeSlideIndex = slides.findIndex((s) => s.id === activeSlideId)
 
+  /* ---- Export summary (Export popover) ---- */
+  const exportEnabledCount = slides.filter((s) => s.exportEnabled !== false).length
+
+  /* ---- Active slide (drives the inspector's Slide sheet + Layers) ---- */
+  const activeSlide = activeSlideIndex >= 0 ? slides[activeSlideIndex] : undefined
+
+  /* ---- Text selection (for properties panel) ---- */
+  const selectedTextItem: PlacedMedia | null = useMemo(() => {
+    if (selectedIds.length !== 1) return null
+    const it = items.find((x) => x.id === selectedIds[0])
+    return it && it.type === 'text' ? it : null
+  }, [selectedIds, items])
+
+  /** Single shape selection — drives the Shape properties panel. */
+  const selectedShapeItem: PlacedMedia | null = useMemo(() => {
+    if (selectedIds.length !== 1) return null
+    const it = items.find((x) => x.id === selectedIds[0])
+    return it && it.type === 'shape' ? it : null
+  }, [selectedIds, items])
+
+  /** Single media (image / video / gif) selection — enables the "Sample from
+   *  Media" button in the Background panel. Null when nothing or multiple
+   *  things are selected. */
+  const selectedMediaItem: PlacedMedia | null = useMemo(() => {
+    if (selectedIds.length !== 1) return null
+    const it = items.find((x) => x.id === selectedIds[0])
+    if (!it) return null
+    return (it.type === 'image' || it.type === 'video' || it.type === 'gif') ? it : null
+  }, [selectedIds, items])
+
+  const refreshFonts = useCallback(async () => {
+    try {
+      const list = await listSystemFonts()
+      if (list.length) setFontList(list)
+    } catch {
+      // already falls back inside listSystemFonts
+    }
+  }, [])
+
+  const onAddText = useCallback(() => {
+    addText()
+    // Trigger font enumeration on the user gesture (queryLocalFonts requires
+    // a transient activation).
+    void refreshFonts()
+  }, [addText, refreshFonts])
+
+  // Theme — Onyx (dark) / Cream (light); lib/theme.ts owns persistence and
+  // the DOM attribute, and resolves the "auto" pasteboard color.
+  const theme = useThemeStore((s) => s.theme)
+  const toggleTheme = useThemeStore((s) => s.toggleTheme)
+
+  /* View cluster — header controls for how the canvas is DISPLAYED, not
+     what's in the document: Preview hides editor chrome; the View popover
+     holds grid, guides, snapping and the workspace color. Lives in the
+     header beside the theme toggle. */
+  const viewCluster = (
+    <div className="popover-host app__view-cluster">
+      {(deckMoves || playing) && (
+        <button
+          type="button"
+          className={`hdr-icon ${playing ? 'hdr-icon--on' : ''}`}
+          onClick={() => useTiovivoStore.getState().setPlaying(!playing)}
+          title={playing ? 'Stop the effects' : 'Play the effects on every slide'}
+          aria-pressed={playing}
+          aria-label={playing ? 'Stop effects' : 'Play effects'}
+          data-testid="play-effects"
+        >
+          <span aria-hidden style={{ fontSize: 13, lineHeight: 1 }}>{playing ? '■' : '▶'}</span>
+        </button>
+      )}
+      <button
+        type="button"
+        className={`hdr-icon ${previewMode ? 'hdr-icon--on' : ''}`}
+        onClick={() => setPreviewMode(!previewMode)}
+        title={previewMode ? 'Preview ON — click to show editor chrome' : 'Hide grids, guides, dividers and warnings to preview as it will export'}
+        aria-pressed={previewMode}
+      >
+        {previewMode
+          ? <Icon.EyeOff style={{ width: 16, height: 16 }} />
+          : <Icon.Eye style={{ width: 16, height: 16 }} />}
+      </button>
+      <button
+        type="button"
+        className={`btn ${viewOpen ? 'btn--seg-active' : ''}`}
+        onClick={() => setViewOpen((v) => !v)}
+        title="Grid, guides, snapping and workspace color"
+        aria-expanded={viewOpen}
+      >
+        View
+      </button>
+      <Popover open={viewOpen} onClose={() => setViewOpen(false)} alignRight width={264}>
+                <div className="popover__section">Layout</div>
+                {/* Wrap the filmstrip into rows — pure view preference, the
+                    document itself is untouched. Seamless mode is one
+                    continuous strip, so rows don't apply there. A div, not a
+                    <label>: a label forwards clicks on "Rows" to its first
+                    button, silently picking 1 row. */}
+                <div
+                  className="field"
+                  style={{ flexDirection: 'row', alignItems: 'center', gap: 10, margin: '6px 0 2px' }}
+                  title={seamlessSlides ? 'Rows are unavailable in Seamless mode — the panorama is one continuous strip.' : 'Arrange the slides into rows on the canvas — just for viewing, the exported carousel is unchanged.'}
+                >
+                  <span style={{ flex: 1 }}>Rows</span>
+                  <div className="app__presets" role="group" aria-label="Slide rows">
+                    {([1, 2, 3, 4] as const).map((n) => (
+                      <button
+                        key={n}
+                        type="button"
+                        className={`btn ${slideRows === n ? 'btn--seg-active' : ''}`}
+                        disabled={seamlessSlides}
+                        onClick={() => setSlideRows(n)}
+                      >
+                        {n}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="popover__section">Overlays</div>
+                <label className="check">
+                  <input type="checkbox" checked={showGrid} onChange={(e) => setShowGrid(e.target.checked)} />
+                  Grid
+                </label>
+                {showGrid && (() => {
+                  // Detents snap to values that evenly divide the slide; show a
+                  // tiny readout describing what the current size produces.
+                  const dividesW = dimensions.width % gridSize === 0
+                  const dividesH = dimensions.height % gridSize === 0
+                  const cols = dividesW ? dimensions.width / gridSize : null
+                  const rows = dividesH ? dimensions.height / gridSize : null
+                  let badge: string
+                  if (cols !== null && rows !== null) badge = `${cols} × ${rows}`
+                  else if (cols !== null) badge = `${cols} cols`
+                  else if (rows !== null) badge = `${rows} rows`
+                  else badge = 'off-grid'
+                  return (
+                    <>
+                      <label
+                        className="slider-field"
+                        title="Cell size in px. The slider snaps to values that produce a whole number of grid cells across the slide (the small ticks). Hold Shift while dragging to bypass snapping; double-click to reset."
+                      >
+                        <span className="slider-field__label">
+                          Grid size
+                          <span className="slider-field__value">{gridSize} px · {badge}</span>
+                        </span>
+                        <input
+                          type="range"
+                          list="tiovivo-grid-detents"
+                          min={4}
+                          max={400}
+                          step={1}
+                          value={gridSize}
+                          style={sliderFill((gridSize - 4) / (400 - 4), 0, 1)}
+                          onChange={(e) => setGridSize(snapGridToDetent(Number(e.target.value)))}
+                          onDoubleClick={() => setGridSize(40)}
+                        />
+                        <datalist id="tiovivo-grid-detents">
+                          {gridDetents.map((v) => <option key={v} value={v} />)}
+                        </datalist>
+                      </label>
+                      <label className="slider-field" title="Visibility of the grid overlay on top of media. Double-click to reset.">
+                        <span className="slider-field__label">
+                          Grid opacity<span className="slider-field__value">{Math.round(gridOpacity * 100)}%</span>
+                        </span>
+                        <input
+                          type="range"
+                          min={0}
+                          max={1}
+                          step={0.05}
+                          value={gridOpacity}
+                          style={sliderFill(gridOpacity, 0, 1)}
+                          onChange={(e) => setGridOpacity(Number(e.target.value))}
+                          onDoubleClick={() => setGridOpacity(0.1)}
+                        />
+                      </label>
+                    </>
+                  )
+                })()}
+                <label className="check">
+                  <input type="checkbox" checked={showCenterGuides} onChange={(e) => setShowCenterGuides(e.target.checked)} />
+                  Center lines
+                </label>
+                <label className="check" title="Dim the areas where the app draws its own interface over your post, so nothing important sits under it.">
+                  <input type="checkbox" checked={showIgSafeArea} onChange={(e) => setShowIgSafeArea(e.target.checked)} />
+                  Safe area
+                </label>
+                {showIgSafeArea && (
+                  <div className="app__presets" role="group" aria-label="Safe area for" style={{ margin: '2px 0 8px' }}>
+                    {(['instagram', 'tiktok'] as const).map((p) => (
+                      <button
+                        key={p}
+                        type="button"
+                        className={`btn ${safeAreaPlatform === p ? 'btn--seg-active' : ''}`}
+                        style={{ flex: 1 }}
+                        onClick={() => useTiovivoStore.getState().setSafeAreaPlatform(p)}
+                        title={p === 'tiktok' ? 'TikTok feed interface — differs from Instagram on 9:16 slides' : 'Instagram feed, Reels and Stories interface'}
+                      >
+                        {p === 'instagram' ? 'Instagram' : 'TikTok'}
+                      </button>
+                    ))}
+                  </div>
+                )}
+                <label className="check" title="Show the pasteboard zone around the slides where off-slide media is clipped.">
+                  <input type="checkbox" checked={showHiddenZone} onChange={(e) => setShowHiddenZone(e.target.checked)} />
+                  Hidden zone
+                </label>
+                <div className="popover__section">Snapping</div>
+                <label className="check">
+                  <input type="checkbox" checked={snapGrid} onChange={(e) => setSnapGrid(e.target.checked)} />
+                  Snap to grid
+                </label>
+                <label className="check">
+                  <input type="checkbox" checked={snapCenter} onChange={(e) => setSnapCenter(e.target.checked)} />
+                  Snap to center
+                </label>
+                <label className="check">
+                  <input type="checkbox" checked={snapItems} onChange={(e) => setSnapItems(e.target.checked)} />
+                  Snap to other media
+                </label>
+                <label className="check">
+                  <input type="checkbox" checked={snapMargins} onChange={(e) => setSnapMargins(e.target.checked)} />
+                  Snap to margins
+                </label>
+                <div className="popover__section">Workspace</div>
+                {(() => {
+                  const isWorkspaceDefault =
+                    !workspaceBgColor || workspaceBgColor.toLowerCase() === WORKSPACE_AUTO
+                  return (
+                    <label className="field" style={{ flexDirection: 'row', alignItems: 'center', gap: 10, margin: '6px 0 2px' }}>
+                      <span style={{ flex: 1 }}>Pasteboard color</span>
+                      <input
+                        className="color-swatch"
+                        type="color"
+                        value={resolveWorkspaceBg(workspaceBgColor, theme)}
+                        onChange={(e) => setWorkspaceBgColor(e.target.value)}
+                        title="Pasteboard color around the slides"
+                      />
+                      <button
+                        type="button"
+                        className="btn btn--ghost btn--sm"
+                        onClick={() => setWorkspaceBgColor(WORKSPACE_AUTO)}
+                        disabled={isWorkspaceDefault}
+                        title={isWorkspaceDefault ? 'Already following the theme' : 'Reset to follow the theme'}
+                        style={{ padding: '2px 6px', flexDirection: 'row' }}
+                      >
+                        <Icon.Reset style={{ width: 13, height: 13 }} />
+                      </button>
+                    </label>
+                  )
+                })()}
+      </Popover>
+    </div>
+  )
+
   return (
-    <div className="app">
+    <div className={`app${showOutlines ? ' app--outline-debug' : ''}`}>
+      <ToastHost />
+      <ConfirmHost />
+      <TipHost />
+      {mcpOpen && <McpDialog onClose={() => setMcpOpen(false)} />}
+      {assistantOpen && (
+        <AssistantPanel
+          onClose={() => setAssistantOpen(false)}
+          startBlank={(preset) => startDocument(preset)}
+          detachFromFile={() => {
+            projectPathRef.current = null
+            setProjectPath(null)
+          }}
+          onFocusSlide={(id) => stageRef.current?.centerSlide(id)}
+        />
+      )}
+      {startOpen && (
+        <StartScreen
+          fonts={fontList}
+          onFontsOpen={() => void refreshFonts()}
+          onBlank={(preset) => { void startDocument(preset) }}
+          onTemplate={(deck) => { void startDocument(deck) }}
+          onOpen={() => { void handleOpen() }}
+          onOpenRecent={(p) => { void window.electronAPI?.openRecent(p) }}
+          onClose={() => setStartOpen(false)}
+        />
+      )}
       <header className="app__header">
-        <div className="app__brand">
-          <div className="app__brand-mark" aria-hidden>T</div>
-          <span className="app__brand-title">Tiovivo</span>
-        </div>
+        {/* Brand mark — icon only, leftmost. */}
+        <button
+          type="button"
+          className="app__brand"
+          onClick={() => setStartOpen((v) => !v)}
+          title={startOpen ? 'Back to the canvas' : 'Start — new project, templates, recent'}
+          aria-label="Start screen"
+          aria-pressed={startOpen}
+        >
+          <img className="app__brand-mark" src={appIconUrl} alt="" />
+        </button>
+        {/* In-app menus for Windows / Linux — right after the mark (one
+            chrome strip, not two). CSS hides them on macOS, where the
+            native menu bar at the top of the screen takes over. */}
+        <MenuBar
+          recents={recents}
+          onNew={() => { void handleNew() }}
+          onOpen={() => { void handleOpen() }}
+          onOpenRecent={(p) => {
+            // Main reads the file and sends app:open-project-file back to us;
+            // loadFromBuffer is wired to that channel via the existing useEffect.
+            window.electronAPI?.openRecent(p)
+          }}
+          onClearRecents={() => {
+            void window.electronAPI?.clearRecents()
+            setRecents([])
+          }}
+          onSave={() => { void handleSave(false) }}
+          onSaveAs={() => { void handleSave(true) }}
+          onConnectClaude={() => setMcpOpen(true)}
+          // The menu hands focus back before running these, so a focused
+          // text field gets its own undo (see runUndoRedo).
+          onUndo={() => { if (!exportingRef.current) runUndoRedo('undo') }}
+          onRedo={() => { if (!exportingRef.current) runUndoRedo('redo') }}
+          onReload={() => { void handleReload() }}
+          showOutlines={showOutlines}
+          onToggleOutlines={() => setShowOutlines((v) => !v)}
+          onToggleDevTools={() => { void window.electronAPI?.toggleDevTools?.() }}
+        />
         <div className="app__brand-sep" aria-hidden />
-        <div className="app__presets">
-          {(
-            [
-              ['hd', 'HD 16:9'],
-              ['1:1', '1 : 1'],
-              ['4:5', '4 : 5'],
-              ['3:4', '3 : 4'],
-            ] as const
-          ).map(([id, label]) => (
-            <button
-              key={id}
-              type="button"
-              className={`btn ${presetId === id ? 'btn--accent' : ''}`}
-              onClick={() => setPreset(id)}
-            >
-              {label}
-              <span className="btn__hint">
-                {PRESETS[id].width}x{PRESETS[id].height}
-              </span>
-            </button>
-          ))}
+        {/* Format — chosen once per project, so it's one chip. Presets,
+            custom W/H and the aspect lock live in its popover. */}
+        <div className="popover-host">
           <button
             type="button"
-            className={`btn ${presetId === 'custom' ? 'btn--accent' : ''}`}
-            onClick={() => setPreset('custom')}
+            className="app__format-chip"
+            onClick={() => setFormatOpen((v) => !v)}
+            title="Canvas format — presets and custom size"
+            aria-expanded={formatOpen}
           >
-            Custom
+            <b>{PRESET_LABELS[presetId] ?? presetId}</b>
+            <span className="app__format-dims">{dimensions.width}×{dimensions.height}</span>
+            <span className="app__chev" aria-hidden>▾</span>
           </button>
+          <Popover open={formatOpen} onClose={() => setFormatOpen(false)} width={312}>
+            <div className="app__presets" style={{ marginBottom: 10 }}>
+              {(
+                [
+                  ['hd', '16:9'],
+                  ['1:1', '1:1'],
+                  ['4:5', '4:5'],
+                  ['3:4', '3:4'],
+                  ['9:16', '9:16'],
+                ] as const
+              ).map(([id, label]) => (
+                <button
+                  key={id}
+                  type="button"
+                  className={`btn ${presetId === id ? 'btn--seg-active' : ''}`}
+                  onClick={() => setPreset(id)}
+                  title={`${PRESETS[id].width} × ${PRESETS[id].height}`}
+                  style={{ flex: 1 }}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            <div className="app__custom-size">
+              <label>
+                W
+                <NumberField
+                  min={64}
+                  max={8192}
+                  // Bind to the live dimensions, not the cached customWidth — that
+                  // field doesn't update when the user clicks a preset, so the
+                  // input would stay stale. setCustomDimensions still flips the
+                  // preset to "custom" as a side effect of typing here.
+                  value={dimensions.width}
+                  scrubStep={1}
+                  onCommit={(w) => {
+                    if (lockAspect) {
+                      const aspect = dimensions.width / Math.max(1, dimensions.height)
+                      const h = Math.max(64, Math.round(w / aspect))
+                      setCustomDimensions(w, h)
+                    } else {
+                      setCustomDimensions(w, dimensions.height)
+                    }
+                  }}
+                />
+              </label>
+              <label>
+                H
+                <NumberField
+                  min={64}
+                  max={8192}
+                  value={dimensions.height}
+                  scrubStep={1}
+                  onCommit={(h) => {
+                    if (lockAspect) {
+                      const aspect = dimensions.width / Math.max(1, dimensions.height)
+                      const w = Math.max(64, Math.round(h * aspect))
+                      setCustomDimensions(w, h)
+                    } else {
+                      setCustomDimensions(dimensions.width, h)
+                    }
+                  }}
+                />
+              </label>
+              {/* Aspect-lock toggle — when locked, editing one dimension
+                  scales the other from the current aspect ratio. */}
+              <button
+                type="button"
+                className={`app__aspect-lock ${lockAspect ? 'app__aspect-lock--locked' : ''}`}
+                onClick={() => setLockAspect((v) => !v)}
+                title={lockAspect ? 'Aspect ratio locked — click to unlock' : 'Lock aspect ratio'}
+                aria-pressed={lockAspect}
+              >
+                {lockAspect
+                  ? <Icon.Link style={{ width: 13, height: 13 }} />
+                  : <Icon.LinkOff style={{ width: 13, height: 13 }} />}
+              </button>
+            </div>
+          </Popover>
         </div>
-        <div className="app__custom-size">
-          <label>
-            W
-            <input
-              type="number"
-              min={64}
-              max={8192}
-              value={customWidth}
-              onChange={(e) =>
-                setCustomDimensions(Number(e.target.value) || 64, customHeight)
-              }
-            />
-          </label>
-          <span>x</span>
-          <label>
-            H
-            <input
-              type="number"
-              min={64}
-              max={8192}
-              value={customHeight}
-              onChange={(e) =>
-                setCustomDimensions(customWidth, Number(e.target.value) || 64)
-              }
-            />
-          </label>
+        {/* Composition mode — paged carousel vs. one continuous panorama.
+            A first-class mode switch, not a buried checkbox: it changes the
+            kind of output (artboard gaps collapse, backgrounds fuse into a
+            single strip across every slide). */}
+        <div className="app__presets" role="group" aria-label="Composition mode">
+          <button
+            type="button"
+            className={`btn ${!seamlessSlides ? 'btn--seg-active' : ''}`}
+            onClick={() => setSeamlessSlides(false)}
+            title="Independent slides with gaps — classic carousel pages"
+          >
+            Slides
+          </button>
+          <button
+            type="button"
+            className={`btn ${seamlessSlides ? 'btn--seg-active' : ''}`}
+            onClick={() => setSeamlessSlides(true)}
+            title="Slides butt together and backgrounds flow across all of them — one continuous panorama"
+          >
+            Seamless
+          </button>
         </div>
         <div className="app__spacer" />
         <button
           type="button"
-          className="btn"
-          onClick={handleOpen}
-          title="Open project (⌘O)"
+          className={`btn${assistantOpen ? ' btn--seg-active' : ''}`}
+          onClick={() => setAssistantOpen((v) => !v)}
+          title="Claude on your deck: create, review, hooks, captions, repurpose"
+          aria-pressed={assistantOpen}
         >
-          Open
+          Assistant
         </button>
+        {viewCluster}
+        {/* Theme toggle — dark ⇄ light, persisted across sessions. The new
+            theme sweeps in as a circle growing from the click point. */}
         <button
           type="button"
-          className="btn"
-          onClick={() => handleSave(false)}
-          title="Save project (⌘S)"
+          className="hdr-icon"
+          onClick={(e) => toggleTheme({ x: e.clientX, y: e.clientY })}
+          title={theme === 'onyx' ? 'Switch to Cream (light) theme' : 'Switch to Onyx (dark) theme'}
         >
-          Save
+          {theme === 'onyx' ? (
+            <Icon.Sun style={{ width: 16, height: 16 }} />
+          ) : (
+            <Icon.Moon style={{ width: 16, height: 16 }} />
+          )}
         </button>
-        <label
-          className="app__export-name"
-          title="Filename prefix used for exported PNGs/MP4s. Defaults to the project name."
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 6,
-            padding: '0 8px',
-            border: '1px solid rgba(255,255,255,0.08)',
-            borderRadius: 6,
-            background: 'rgba(255,255,255,0.03)',
-            height: 32,
-          }}
-        >
-          <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.5)' }}>Name</span>
-          <input
-            type="text"
-            value={exportPrefix}
-            onChange={(e) => setExportPrefix(e.target.value)}
-            placeholder="carousel"
-            spellCheck={false}
-            style={{
-              width: 120,
-              border: 'none',
-              outline: 'none',
-              background: 'transparent',
-              color: '#fff',
-              fontSize: 13,
-              fontFamily: 'inherit',
-            }}
-          />
-          <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.4)', fontFamily: 'var(--mono)' }}>_NN</span>
-        </label>
-        <button
-          type="button"
-          className="btn btn--export"
-          disabled={exporting}
-          onClick={exportAll}
-        >
-          <Icon.Export />
-          {exporting ? (exportProgress || 'Exporting…') : 'Export all'}
-        </button>
+        {/* Export — the CTA opens a popover with everything that only
+            matters at export time: filename prefix, the slide-name toggle,
+            and how many slides are enabled. One concept of "name", one
+            place to find it. */}
+        <div className="popover-host">
+          <button
+            type="button"
+            className="btn btn--export"
+            disabled={exporting}
+            onClick={() => setExportOpen((v) => !v)}
+            aria-expanded={exportOpen}
+          >
+            <Icon.Export />
+            {exporting ? 'Exporting…' : 'Export'}
+            <span className="app__chev" aria-hidden>▾</span>
+          </button>
+          <Popover open={exportOpen} onClose={() => setExportOpen(false)} alignRight width={288}>
+            <label className="field" style={{ marginTop: 0 }}>
+              <span>Filename prefix</span>
+              <input
+                type="text"
+                value={exportPrefix}
+                onChange={(e) => setExportPrefix(e.target.value)}
+                placeholder="tiovivo"
+                spellCheck={false}
+              />
+            </label>
+            <label className="check" title="Insert each slide's custom name into its export filename. Slides without a name keep the plain numbered form.">
+              <input
+                type="checkbox"
+                checked={includeSlideNameInFilename}
+                onChange={(e) => setIncludeSlideNameInFilename(e.target.checked)}
+              />
+              Slide names in filenames
+            </label>
+            <div className="popover__section">Export as</div>
+            <div className="app__presets" role="group" aria-label="Export as">
+              {([['slides', 'Slides'], ['photos', 'Photos'], ['video', 'One video']] as const).map(([m, label]) => (
+                <button
+                  key={m}
+                  type="button"
+                  className={`btn ${exportMode === m ? 'btn--seg-active' : ''}`}
+                  style={{ flex: 1 }}
+                  onClick={() => setExportMode(m)}
+                  title={m === 'slides'
+                    ? 'A file per slide: PNG, or MP4 for slides with video or GIFs'
+                    : m === 'photos'
+                      ? 'A JPEG of every slide — for TikTok photo mode. Video slides give their cover frame.'
+                      : 'All slides in order as one MP4, with entrance animations — for Reels and TikTok'}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            {exportMode === 'video' && (
+              <label className="field" style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                <span style={{ flex: 1 }}>Between slides</span>
+                <div className="app__presets" role="group" aria-label="Transition between slides">
+                  {(['cut', 'fade', 'push'] as const).map((t) => (
+                    <button
+                      key={t}
+                      type="button"
+                      className={`btn ${reelTransition === t ? 'btn--seg-active' : ''}`}
+                      onClick={() => setReelTransition(t)}
+                    >
+                      {t === 'cut' ? 'Cut' : t === 'fade' ? 'Fade' : 'Push'}
+                    </button>
+                  ))}
+                </div>
+              </label>
+            )}
+            <p className="hint" style={{ marginTop: 6 }}>
+              {exportMode === 'video' ? 'File: ' : 'Files: '}<code style={{ fontFamily: 'var(--mono)' }}>
+                {(sanitizeFilename(exportPrefix.trim()) || 'tiovivo')}
+                {exportMode === 'video'
+                  ? '_video.mp4'
+                  : `${includeSlideNameInFilename ? '_SLIDE' : ''}_01${exportMode === 'photos' ? '.jpg' : '.png / .mp4'}`}
+              </code>
+            </p>
+            <p className="hint">
+              {exportEnabledCount} of {slides.length} slide{slides.length === 1 ? '' : 's'} will export —
+              toggle each slide from its label on the canvas.
+            </p>
+            <button
+              type="button"
+              className="btn btn--export"
+              disabled={exporting || exportEnabledCount === 0}
+              onClick={() => {
+                setExportOpen(false)
+                if (exportMode === 'video') void exportReel(reelTransition)
+                else void exportAll(undefined, exportMode)
+              }}
+              style={{ width: '100%', justifyContent: 'center', marginTop: 12 }}
+            >
+              <Icon.Export />
+              {exporting
+                ? 'Exporting…'
+                : exportMode === 'video'
+                  ? 'Export video'
+                  : exportEnabledCount === slides.length
+                    ? 'Export all slides'
+                    : `Export ${exportEnabledCount} slide${exportEnabledCount === 1 ? '' : 's'}`}
+            </button>
+          </Popover>
+        </div>
       </header>
 
       <div className="app__body">
+        {/* RIGHT — Inspector: properties of the current focus, priority-
+            ordered. Selection-driven panels first; slide-level Background
+            below them; canvas configuration (Guides & snap) last, collapsed
+            by default. Never empty: with nothing selected it reads as the
+            slide's property sheet. */}
         <aside className="app__sidebar">
-          <input
-            ref={addMediaInputRef}
-            type="file"
-            multiple
-            accept="image/*,video/*"
-            style={{ display: 'none' }}
-            onChange={(e) => {
-              const files = e.target.files
-              onFiles(files)
-              if (e.target) e.target.value = ''
-            }}
-          />
-          <button
-            type="button"
-            className="btn btn--outline"
-            onClick={() => addMediaInputRef.current?.click()}
-            title="Add images or videos"
-            style={{
-              flexDirection: 'row',
-              gap: 8,
-              padding: '7px 12px',
-              fontSize: '0.78rem',
-              justifyContent: 'center',
-              width: '100%',
-              marginBottom: 12,
-            }}
-          >
-            <Icon.Plus style={{ width: 13, height: 13 }} />
-            Add media
-          </button>
+          {selectedTextItem && (() => {
+            const t = selectedTextItem
+            const patch = (p: Partial<PlacedMedia>) => updateItem(t.id, p)
+            const align: TextAlign = (t.textAlign as TextAlign) || 'left'
+            return (
+              <details className="collapsible" open>
+                <summary><h2><Icon.Text />Text</h2></summary>
+                <div className="collapsible__body">
+                  <label className="field">
+                    <span>Content</span>
+                    <textarea
+                      value={t.text || ''}
+                      onChange={(e) => patch({ text: e.target.value })}
+                      spellCheck={false}
+                      rows={3}
+                      style={{ resize: 'vertical', fontFamily: 'inherit' }}
+                    />
+                  </label>
 
-          <details className="collapsible" open>
-            <summary><h2><Icon.Sliders />Background</h2></summary>
-            <div className="collapsible__body">
-              <label className="field" style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-                <span>All slides</span>
-                <input
-                  type="color"
-                  value={allBgSameColor || '#ffffff'}
-                  onChange={(e) => setAllSlidesBgColor(e.target.value)}
-                  title="Apply this background color to every slide"
-                  style={{ width: 32, height: 24, padding: 0, border: '1.5px solid rgba(255,255,255,0.2)', borderRadius: 4, background: 'transparent', cursor: 'pointer' }}
-                />
-                <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.45)', fontFamily: 'var(--mono)' }}>
-                  {allBgSameColor ? allBgSameColor : 'mixed'}
-                </span>
-              </label>
-              <label className="field" style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-                <span>Workspace</span>
-                <input
-                  type="color"
-                  value={workspaceBgColor || '#0a0a0e'}
-                  onChange={(e) => setWorkspaceBgColor(e.target.value)}
-                  title="Pasteboard color around the slides"
-                  style={{ width: 32, height: 24, padding: 0, border: '1.5px solid rgba(255,255,255,0.2)', borderRadius: 4, background: 'transparent', cursor: 'pointer' }}
-                />
-                <span style={{ fontSize: 11, color: 'rgba(255,255,255,0.45)', fontFamily: 'var(--mono)' }}>
-                  {workspaceBgColor || '#0a0a0e'}
-                </span>
-                {workspaceBgColor && workspaceBgColor.toLowerCase() !== '#0a0a0e' && (
-                  <button
-                    type="button"
-                    onClick={(e) => { e.preventDefault(); setWorkspaceBgColor('#0a0a0e') }}
-                    title="Reset to default"
-                    style={{
-                      marginLeft: 'auto',
-                      background: 'transparent',
-                      border: '1px solid rgba(255,255,255,0.15)',
-                      borderRadius: 4,
-                      color: 'rgba(255,255,255,0.55)',
-                      cursor: 'pointer',
-                      padding: '2px 6px',
-                      fontSize: 10,
-                      lineHeight: 1.4,
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      gap: 4,
-                    }}
-                  >
-                    <Icon.Reset style={{ width: 10, height: 10 }} />
-                    Reset
-                  </button>
-                )}
-              </label>
-            </div>
-          </details>
+                  <label className="field">
+                    <span>Font</span>
+                    <FontPicker
+                      value={t.fontFamily ?? ''}
+                      fonts={fontList}
+                      onCommit={(font) => patch({ fontFamily: font })}
+                      // Hover / arrow previews are transient: no undo entry,
+                      // no dirty flag, no lastTextStyle change. FontPicker
+                      // restores the opening font before committing, so the
+                      // commit is a single undo step.
+                      onPreview={(font) => syncItemMeasurements(t.id, { fontFamily: font })}
+                      onOpen={() => void refreshFonts()}
+                    />
+                  </label>
 
-          <details className="collapsible" open>
-            <summary><h2><Icon.Grid />Guides & snap</h2></summary>
-            <div className="collapsible__body">
-              <label className="check">
-                <input type="checkbox" checked={seamlessSlides} onChange={(e) => setSeamlessSlides(e.target.checked)} />
-                Seamless slides
-              </label>
-              <label className="check">
-                <input type="checkbox" checked={showHiddenZone} onChange={(e) => setShowHiddenZone(e.target.checked)} />
-                Hidden zone
-              </label>
-              <hr />
-              <label className="check">
-                <input type="checkbox" checked={showGrid} onChange={(e) => setShowGrid(e.target.checked)} />
-                Grid
-              </label>
-              <label className="field">
-                <span>Grid px</span>
-                <input type="number" min={4} max={400} value={gridSize} onChange={(e) => setGridSize(Number(e.target.value) || 40)} />
-              </label>
-              <label className="check">
-                <input type="checkbox" checked={showCenterGuides} onChange={(e) => setShowCenterGuides(e.target.checked)} />
-                Center lines
-              </label>
-              <hr />
-              <label className="check">
-                <input type="checkbox" checked={snapGrid} onChange={(e) => setSnapGrid(e.target.checked)} />
-                Snap to grid
-              </label>
-              <label className="check">
-                <input type="checkbox" checked={snapCenter} onChange={(e) => setSnapCenter(e.target.checked)} />
-                Snap to center
-              </label>
-              <label className="check">
-                <input type="checkbox" checked={snapItems} onChange={(e) => setSnapItems(e.target.checked)} />
-                Snap to other media
-              </label>
-              <label className="check">
-                <input type="checkbox" checked={snapMargins} onChange={(e) => setSnapMargins(e.target.checked)} />
-                Snap to margins
-              </label>
-            </div>
-          </details>
+                  <label className="check" title="When on, font size grows or shrinks so the text fills the box width × height.">
+                    <input
+                      type="checkbox"
+                      checked={!!t.fillMode}
+                      onChange={(e) => patch({ fillMode: e.target.checked })}
+                    />
+                    Fill box (auto-size)
+                  </label>
+
+                  <div className="field" style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
+                    <label
+                      style={{ display: 'flex', flexDirection: 'column', gap: 4, flex: 1, minWidth: 0 }}
+                      title={t.fillMode ? 'Disabled — size is computed from the box dimensions while Fill is on.' : undefined}
+                    >
+                      <span>Size{t.fillMode ? ' (auto)' : ''}</span>
+                      <NumberField
+                        min={4}
+                        max={2000}
+                        value={Math.round(t.fontSize || 64)}
+                        onCommit={(n) => patch({ fontSize: n })}
+                        style={{
+                          width: '100%',
+                          minWidth: 0,
+                          boxSizing: 'border-box',
+                          opacity: t.fillMode ? 0.5 : 1,
+                          pointerEvents: t.fillMode ? 'none' : 'auto',
+                        }}
+                      />
+                    </label>
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: 4, flex: 1, minWidth: 0 }}>
+                      <span>Line height</span>
+                      <NumberField
+                        step={0.05}
+                        min={0.6}
+                        max={4}
+                        decimals={2}
+                        value={t.lineHeight ?? 1.15}
+                        onCommit={(n) => patch({ lineHeight: n })}
+                        style={{ width: '100%', minWidth: 0, boxSizing: 'border-box' }}
+                      />
+                    </label>
+                  </div>
+
+                  <div className="field" style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
+                    <label style={{ display: 'flex', flexDirection: 'column', gap: 4, flex: 1, minWidth: 0 }}>
+                      <span>Letter spacing</span>
+                      <NumberField
+                        step={0.5}
+                        decimals={1}
+                        value={t.letterSpacing ?? 0}
+                        onCommit={(n) => patch({ letterSpacing: n })}
+                        style={{ width: '100%', minWidth: 0, boxSizing: 'border-box' }}
+                      />
+                    </label>
+                    <label
+                      style={{ display: 'flex', flexDirection: 'column', gap: 4, flex: 1, minWidth: 0 }}
+                      title="Width of the text box. Text wraps to a new line when a word would extend past this width. Same as dragging the side handles on the canvas."
+                    >
+                      <span>Box width</span>
+                      <NumberField
+                        min={20}
+                        value={Math.round(t.width)}
+                        onCommit={(n) => patch({ width: n })}
+                        style={{ width: '100%', minWidth: 0, boxSizing: 'border-box' }}
+                      />
+                    </label>
+                  </div>
+
+                  {t.fillMode && (
+                    <label
+                      className="field"
+                      title="Height of the text box. Font grows to fill this height while keeping word-wrap inside the box width."
+                    >
+                      <span>Box height</span>
+                      <NumberField
+                        min={20}
+                        value={Math.round(t.height)}
+                        onCommit={(n) => patch({ height: n })}
+                        style={{ width: '100%', minWidth: 0, boxSizing: 'border-box' }}
+                      />
+                    </label>
+                  )}
+
+                  <div className="field text-style-toolbar" style={{ flexDirection: 'row' }}>
+                    <button
+                      type="button"
+                      className={`btn btn--sm text-style-btn ${t.bold ? 'btn--accent' : ''}`}
+                      style={{ fontWeight: 700 }}
+                      onClick={() => patch({ bold: !t.bold })}
+                      title="Bold"
+                    >
+                      B
+                    </button>
+                    <button
+                      type="button"
+                      className={`btn btn--sm text-style-btn ${t.italic ? 'btn--accent' : ''}`}
+                      style={{ fontStyle: 'italic' }}
+                      onClick={() => patch({ italic: !t.italic })}
+                      title="Italic"
+                    >
+                      I
+                    </button>
+                    <div className="text-style-toolbar__spacer" />
+                    {(['left', 'center', 'right', 'justify'] as const).map((a) => (
+                      <button
+                        key={a}
+                        type="button"
+                        className={`btn btn--sm text-style-btn ${align === a ? 'btn--accent' : ''}`}
+                        onClick={() => patch({ textAlign: a })}
+                        title={`Align ${a}`}
+                      >
+                        {a === 'left' ? 'L' : a === 'center' ? 'C' : a === 'right' ? 'R' : 'J'}
+                      </button>
+                    ))}
+                  </div>
+
+                  <label className="field" style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                    <span>Color</span>
+                    <input
+                      className="color-swatch"
+                      type="color"
+                      value={t.textColor || '#ffffff'}
+                      onChange={(e) => patch({ textColor: e.target.value })}
+                    />
+                    <span className="field__value" style={{ flex: 1 }}>
+                      {t.textColor || '#ffffff'}
+                    </span>
+                    <BrandSwatches value={t.textColor} onPick={(c) => patch({ textColor: c })} />
+                  </label>
+
+                  <hr />
+
+                  {/* ── Outline ── */}
+                  <label className="field" style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                    <span>Outline</span>
+                    <input
+                      className="color-swatch"
+                      type="color"
+                      value={t.strokeColor || '#000000'}
+                      onChange={(e) => patch({ strokeColor: e.target.value })}
+                    />
+                    <span className="field__value" style={{ flex: 1 }}>
+                      {(t.strokeWidth ?? 0) > 0 ? (t.strokeColor || '#000000') : 'off'}
+                    </span>
+                  </label>
+                  <label className="slider-field" title="Outline thickness — set to 0 to turn off. Double-click the slider to reset.">
+                    <span className="slider-field__label">
+                      Outline width<span className="slider-field__value">{Math.round(t.strokeWidth ?? 0)} px</span>
+                    </span>
+                    <input
+                      type="range"
+                      min={0}
+                      max={20}
+                      step={0.5}
+                      value={t.strokeWidth ?? 0}
+                      style={sliderFill((t.strokeWidth ?? 0) / 20, 0, 1)}
+                      onChange={(e) => patch({ strokeWidth: Number(e.target.value) })}
+                      onDoubleClick={() => patch({ strokeWidth: 0 })}
+                    />
+                  </label>
+
+                  <hr />
+
+                  {/* ── Shadow ── */}
+                  <label className="check" title="Soft drop shadow rendered under the text">
+                    <input
+                      type="checkbox"
+                      checked={!!t.shadowEnabled}
+                      onChange={(e) => patch({ shadowEnabled: e.target.checked })}
+                    />
+                    Shadow
+                  </label>
+                  {t.shadowEnabled && (
+                    <>
+                      <label className="field" style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                        <span>Color</span>
+                        <input
+                          className="color-swatch"
+                          type="color"
+                          value={t.shadowColor || '#000000'}
+                          onChange={(e) => patch({ shadowColor: e.target.value })}
+                        />
+                        <span className="field__value">
+                          {t.shadowColor || '#000000'}
+                        </span>
+                      </label>
+                      <div className="field" style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
+                        <label style={{ display: 'flex', flexDirection: 'column', gap: 4, flex: 1, minWidth: 0 }}>
+                          <span>Blur</span>
+                          <NumberField
+                            min={0}
+                            max={200}
+                            value={Math.round(t.shadowBlur ?? 8)}
+                            onCommit={(n) => patch({ shadowBlur: n })}
+                            style={{ width: '100%', minWidth: 0, boxSizing: 'border-box' }}
+                          />
+                        </label>
+                        <label style={{ display: 'flex', flexDirection: 'column', gap: 4, flex: 1, minWidth: 0 }}>
+                          <span>Opacity</span>
+                          <NumberField
+                            step={0.05}
+                            min={0}
+                            max={1}
+                            decimals={2}
+                            value={t.shadowOpacity ?? 0.5}
+                            onCommit={(n) => patch({ shadowOpacity: n })}
+                            style={{ width: '100%', minWidth: 0, boxSizing: 'border-box' }}
+                          />
+                        </label>
+                      </div>
+                      <div className="field" style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
+                        <label style={{ display: 'flex', flexDirection: 'column', gap: 4, flex: 1, minWidth: 0 }}>
+                          <span>Offset X</span>
+                          <NumberField
+                            min={-200}
+                            max={200}
+                            value={Math.round(t.shadowOffsetX ?? 0)}
+                            onCommit={(n) => patch({ shadowOffsetX: n })}
+                            style={{ width: '100%', minWidth: 0, boxSizing: 'border-box' }}
+                          />
+                        </label>
+                        <label style={{ display: 'flex', flexDirection: 'column', gap: 4, flex: 1, minWidth: 0 }}>
+                          <span>Offset Y</span>
+                          <NumberField
+                            min={-200}
+                            max={200}
+                            value={Math.round(t.shadowOffsetY ?? 4)}
+                            onCommit={(n) => patch({ shadowOffsetY: n })}
+                            style={{ width: '100%', minWidth: 0, boxSizing: 'border-box' }}
+                          />
+                        </label>
+                      </div>
+                    </>
+                  )}
+
+                  <hr />
+
+                  {/* ── Background pill ── */}
+                  <label className="field" style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                    <span>Background</span>
+                    <input
+                      className="color-swatch"
+                      type="color"
+                      value={t.textBgColor || '#000000'}
+                      onChange={(e) => patch({ textBgColor: e.target.value, textBgPadding: t.textBgPadding ?? 16, textBgCornerRadius: t.textBgCornerRadius ?? 8, textBgOpacity: t.textBgOpacity ?? 1 })}
+                    />
+                    <span className="field__value" style={{ flex: 1 }}>
+                      {t.textBgColor || 'off'}
+                    </span>
+                    {t.textBgColor && (
+                      <button
+                        type="button"
+                        className="btn btn--sm"
+                        title="Remove background"
+                        onClick={() => patch({ textBgColor: undefined })}
+                      >
+                        ⌀
+                      </button>
+                    )}
+                  </label>
+                  {t.textBgColor && (
+                    <>
+                      <label className="slider-field" title="How much the background extends past the text bounds. Double-click to reset.">
+                        <span className="slider-field__label">
+                          Padding<span className="slider-field__value">{Math.round(t.textBgPadding ?? 0)} px</span>
+                        </span>
+                        <input
+                          type="range"
+                          min={0}
+                          max={120}
+                          step={1}
+                          value={t.textBgPadding ?? 0}
+                          style={sliderFill((t.textBgPadding ?? 0) / 120, 0, 1)}
+                          onChange={(e) => patch({ textBgPadding: Number(e.target.value) })}
+                          onDoubleClick={() => patch({ textBgPadding: 16 })}
+                        />
+                      </label>
+                      <label className="slider-field" title="Background corner rounding. Double-click to reset.">
+                        <span className="slider-field__label">
+                          Corner radius<span className="slider-field__value">{Math.round(t.textBgCornerRadius ?? 0)} px</span>
+                        </span>
+                        <input
+                          type="range"
+                          min={0}
+                          max={200}
+                          step={1}
+                          value={t.textBgCornerRadius ?? 0}
+                          style={sliderFill((t.textBgCornerRadius ?? 0) / 200, 0, 1)}
+                          onChange={(e) => patch({ textBgCornerRadius: Number(e.target.value) })}
+                          onDoubleClick={() => patch({ textBgCornerRadius: 8 })}
+                        />
+                      </label>
+                      <label className="slider-field" title="Double-click to reset to fully opaque.">
+                        <span className="slider-field__label">
+                          Opacity<span className="slider-field__value">{Math.round((t.textBgOpacity ?? 1) * 100)}%</span>
+                        </span>
+                        <input
+                          type="range"
+                          min={0}
+                          max={1}
+                          step={0.05}
+                          value={t.textBgOpacity ?? 1}
+                          style={sliderFill(t.textBgOpacity ?? 1, 0, 1)}
+                          onChange={(e) => patch({ textBgOpacity: Number(e.target.value) })}
+                          onDoubleClick={() => patch({ textBgOpacity: 1 })}
+                        />
+                      </label>
+                    </>
+                  )}
+                </div>
+              </details>
+            )
+          })()}
+
+          {selectedMediaItem && (() => {
+            const m = selectedMediaItem
+            const patch = (p: Partial<PlacedMedia>) => updateItem(m.id, p)
+            // One-click looks. Values are deltas applied to the canonical
+            // brightness/contrast/saturation/blur fields the rest of the app
+            // already understands — no new state, so undo/redo / .vpost
+            // serialisation just works.
+            type Preset = { name: string; patch: Partial<PlacedMedia> }
+            const presets: Preset[] = [
+              { name: 'Reset', patch: { brightness: 0, contrast: 0, saturation: 1, blur: 0 } },
+              { name: 'Warm',  patch: { brightness: 0.05, contrast: 5, saturation: 1.12, blur: 0 } },
+              { name: 'Cool',  patch: { brightness: 0,    contrast: 5, saturation: 0.92, blur: 0 } },
+              { name: 'Punch', patch: { brightness: 0.03, contrast: 18, saturation: 1.2, blur: 0 } },
+              { name: 'Fade',  patch: { brightness: 0.1,  contrast: -18, saturation: 0.85, blur: 0 } },
+              { name: 'Mono',  patch: { brightness: 0,    contrast: 8, saturation: 0, blur: 0 } },
+            ]
+            const presetIsActive = (p: Preset): boolean => {
+              const cb = m.brightness ?? 0
+              const cc = m.contrast ?? 0
+              const cs = m.saturation ?? 1
+              const cbl = m.blur ?? 0
+              return Math.abs(cb - (p.patch.brightness ?? 0)) < 0.005
+                && Math.abs(cc - (p.patch.contrast ?? 0)) < 0.5
+                && Math.abs(cs - (p.patch.saturation ?? 1)) < 0.01
+                && Math.abs(cbl - (p.patch.blur ?? 0)) < 0.5
+            }
+            return (
+              <details className="collapsible" open>
+                <summary><h2><Icon.Sliders />Image adjustments</h2></summary>
+                <div className="collapsible__body">
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 4 }}>
+                    {presets.map((p) => (
+                      <button
+                        key={p.name}
+                        type="button"
+                        className={`btn btn--sm ${presetIsActive(p) ? 'btn--accent' : ''}`}
+                        onClick={() => patch(p.patch)}
+                        style={{ padding: '5px 4px', fontSize: '0.7rem' }}
+                        title={`Apply ${p.name} look — overwrites brightness / contrast / saturation`}
+                      >
+                        {p.name}
+                      </button>
+                    ))}
+                  </div>
+
+                  <label className="slider-field" title="Exposure / brightness (-1 to +1). Double-click to reset.">
+                    <span className="slider-field__label">
+                      Brightness<span className="slider-field__value">{(m.brightness ?? 0).toFixed(2)}</span>
+                    </span>
+                    <input
+                      type="range"
+                      min={-1} max={1} step={0.01}
+                      value={m.brightness ?? 0}
+                      style={sliderFill(((m.brightness ?? 0) + 1) / 2, 0, 1)}
+                      onChange={(e) => patch({ brightness: Number(e.target.value) })}
+                      onDoubleClick={() => patch({ brightness: 0 })}
+                    />
+                  </label>
+                  <label className="slider-field" title="Contrast (-100 to +100). Double-click to reset.">
+                    <span className="slider-field__label">
+                      Contrast<span className="slider-field__value">{Math.round(m.contrast ?? 0)}</span>
+                    </span>
+                    <input
+                      type="range"
+                      min={-100} max={100} step={1}
+                      value={m.contrast ?? 0}
+                      style={sliderFill(((m.contrast ?? 0) + 100) / 200, 0, 1)}
+                      onChange={(e) => patch({ contrast: Number(e.target.value) })}
+                      onDoubleClick={() => patch({ contrast: 0 })}
+                    />
+                  </label>
+                  <label className="slider-field" title="Saturation (0 = greyscale, 1 = normal, 2 = punchy). Double-click to reset.">
+                    <span className="slider-field__label">
+                      Saturation<span className="slider-field__value">{(m.saturation ?? 1).toFixed(2)}</span>
+                    </span>
+                    <input
+                      type="range"
+                      min={0} max={2} step={0.01}
+                      value={m.saturation ?? 1}
+                      style={sliderFill((m.saturation ?? 1) / 2, 0, 1)}
+                      onChange={(e) => patch({ saturation: Number(e.target.value) })}
+                      onDoubleClick={() => patch({ saturation: 1 })}
+                    />
+                  </label>
+                  <label className="slider-field" title="Gaussian blur radius in pixels. Double-click to reset.">
+                    <span className="slider-field__label">
+                      Blur<span className="slider-field__value">{Math.round(m.blur ?? 0)} px</span>
+                    </span>
+                    <input
+                      type="range"
+                      min={0} max={50} step={1}
+                      value={m.blur ?? 0}
+                      style={sliderFill((m.blur ?? 0) / 50, 0, 1)}
+                      onChange={(e) => patch({ blur: Number(e.target.value) })}
+                      onDoubleClick={() => patch({ blur: 0 })}
+                    />
+                  </label>
+                  <label className="slider-field" title="Whole-item transparency — applies in the editor and in exports. Double-click to reset.">
+                    <span className="slider-field__label">
+                      Opacity<span className="slider-field__value">{Math.round((m.opacity ?? 1) * 100)}%</span>
+                    </span>
+                    <input
+                      type="range"
+                      min={0} max={1} step={0.01}
+                      value={m.opacity ?? 1}
+                      style={sliderFill(m.opacity ?? 1, 0, 1)}
+                      onChange={(e) => patch({ opacity: Number(e.target.value) })}
+                      onDoubleClick={() => patch({ opacity: 1 })}
+                    />
+                  </label>
+                </div>
+              </details>
+            )
+          })()}
+
+          {selectedShapeItem && (() => {
+            const s = selectedShapeItem
+            const patch = (p: Partial<PlacedMedia>) => updateItem(s.id, p)
+            const kind: ShapeKind = (s.shapeKind as ShapeKind) || 'rect'
+            const fillIsTransparent = (s.fillColor ?? '') === 'transparent'
+            return (
+              <details className="collapsible" open>
+                <summary><h2><Icon.Shape />Shape</h2></summary>
+                <div className="collapsible__body">
+                  <div className="field" style={{ flexDirection: 'row', gap: 6, alignItems: 'center' }}>
+                    {(['rect', 'ellipse', 'line', 'cursor'] as const).map((k) => (
+                      <button
+                        key={k}
+                        type="button"
+                        className={`btn btn--sm ${kind === k ? 'btn--accent' : ''}`}
+                        onClick={() => patch({ shapeKind: k })}
+                        title={k === 'rect' ? 'Rectangle' : k === 'ellipse' ? 'Ellipse / circle' : k === 'cursor' ? 'Pointer — can glide in and click (Effects)' : 'Line / divider'}
+                        style={{ flex: 1, padding: '6px 4px' }}
+                      >
+                        {k === 'rect' ? '▭' : k === 'ellipse' ? '◯' : k === 'cursor' ? '➤' : '─'}
+                      </button>
+                    ))}
+                  </div>
+
+                  {kind !== 'line' && (
+                    <label className="field" style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                      <span>Fill</span>
+                      <input
+                        className="color-swatch"
+                        type="color"
+                        value={fillIsTransparent ? '#ffffff' : (s.fillColor || '#ffffff')}
+                        onChange={(e) => patch({ fillColor: e.target.value })}
+                        disabled={fillIsTransparent}
+                      />
+                      <span className="field__value" style={{ flex: 1 }}>
+                        {fillIsTransparent ? 'none' : (s.fillColor || '#ffffff')}
+                      </span>
+                      <BrandSwatches value={s.fillColor} onPick={(c) => patch({ fillColor: c })} />
+                      <button
+                        type="button"
+                        className={`btn btn--sm ${fillIsTransparent ? 'btn--accent' : ''}`}
+                        title="Toggle transparent fill (outline-only)"
+                        onClick={() => patch({
+                          fillColor: fillIsTransparent ? '#ffffff' : 'transparent',
+                          // Make sure the shape stays visible when fill goes to none
+                          strokeWidth: fillIsTransparent ? (s.strokeWidth ?? 0) : Math.max(2, s.strokeWidth ?? 0),
+                        })}
+                      >
+                        ⌀
+                      </button>
+                    </label>
+                  )}
+
+                  <label className="field" style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                    <span>Stroke</span>
+                    <input
+                      className="color-swatch"
+                      type="color"
+                      value={s.strokeColor || '#ffffff'}
+                      onChange={(e) => patch({ strokeColor: e.target.value })}
+                    />
+                    <span className="field__value" style={{ flex: 1 }}>
+                      {s.strokeColor || '#ffffff'}
+                    </span>
+                  </label>
+
+                  <label className="slider-field" title="Outline thickness in px (slide-space). Double-click to reset.">
+                    <span className="slider-field__label">
+                      {kind === 'line' ? 'Thickness' : 'Stroke width'}
+                      <span className="slider-field__value">{Math.round(s.strokeWidth ?? 0)} px</span>
+                    </span>
+                    <input
+                      type="range"
+                      min={0}
+                      max={kind === 'line' ? 80 : 40}
+                      step={1}
+                      value={s.strokeWidth ?? 0}
+                      style={sliderFill((s.strokeWidth ?? 0) / (kind === 'line' ? 80 : 40), 0, 1)}
+                      onChange={(e) => patch({ strokeWidth: Number(e.target.value) })}
+                      onDoubleClick={() => patch({ strokeWidth: kind === 'line' ? 6 : 0 })}
+                    />
+                  </label>
+
+                  {kind === 'rect' && (
+                    <label className="slider-field" title="Rounded-corner radius in px. Double-click to reset.">
+                      <span className="slider-field__label">
+                        Corner radius
+                        <span className="slider-field__value">{Math.round(s.cornerRadius ?? 0)} px</span>
+                      </span>
+                      <input
+                        type="range"
+                        min={0}
+                        max={Math.round(Math.min(s.width, s.height) / 2)}
+                        step={1}
+                        value={s.cornerRadius ?? 0}
+                        style={sliderFill((s.cornerRadius ?? 0) / Math.max(1, Math.min(s.width, s.height) / 2), 0, 1)}
+                        onChange={(e) => patch({ cornerRadius: Number(e.target.value) })}
+                        onDoubleClick={() => patch({ cornerRadius: 12 })}
+                      />
+                    </label>
+                  )}
+                </div>
+              </details>
+            )
+          })()}
 
           {selectedIds.length > 0 && (() => {
             const count = selectedIds.length
             const singleId = count === 1 ? selectedIds[0]! : null
             const singleOk = singleId ? !!items.find((x) => x.id === singleId) : false
             if (singleId && !singleOk) return null
+            const singleItem = singleId ? items.find((x) => x.id === singleId) : null
+            const isImage = singleItem?.type === 'image'
+            const isGif = singleItem?.type === 'gif'
+            const singleRemoveLabel = singleItem
+              ? `Remove ${singleItem.type === 'gif' ? 'GIF' : singleItem.type}`
+              : 'Remove item'
             return (
               <div className="selection-panel">
                 <h2><Icon.Target />{count > 1 ? `Selection (${count})` : 'Selection'}</h2>
+                {singleItem && (
+                  <label className="check" title="When on, this element shows on every slide. The home slide drives its position; other slides render a non-interactive copy at the same coordinates.">
+                    <input
+                      type="checkbox"
+                      checked={!!singleItem.appearsOnAllSlides}
+                      onChange={(e) => updateItem(singleItem.id, { appearsOnAllSlides: e.target.checked })}
+                    />
+                    Show on all slides
+                  </label>
+                )}
+                {singleItem && !singleItem.appearsOnAllSlides && (() => {
+                  const anim: EntranceAnim = singleItem.animIn ?? 'none'
+                  const delay = singleItem.animDelay ?? 0
+                  return (
+                    <>
+                      <label className="field" title="How this item arrives. It plays in the one-video export, in the effects preview, and in the looping video of a slide that has effects. Stills ignore it.">
+                        <span>Entrance in video</span>
+                        <div className="app__presets" role="group" aria-label="Entrance animation">
+                          {(['none', 'fade', 'rise', 'pop'] as const).map((a) => (
+                            <button
+                              key={a}
+                              type="button"
+                              className={`btn ${anim === a ? 'btn--seg-active' : ''}`}
+                              style={{ flex: 1 }}
+                              onClick={() => updateItem(singleItem.id, { animIn: a })}
+                            >
+                              {a === 'none' ? 'None' : a === 'fade' ? 'Fade' : a === 'rise' ? 'Rise' : 'Pop'}
+                            </button>
+                          ))}
+                        </div>
+                      </label>
+                      {anim !== 'none' && (
+                        <label className="slider-field" title="Seconds after the slide appears before this item comes in. Double-click to reset.">
+                          <span className="slider-field__label">
+                            Starts after<span className="slider-field__value">{delay.toFixed(1)} s</span>
+                          </span>
+                          <input
+                            type="range"
+                            min={0}
+                            max={6}
+                            step={0.1}
+                            value={delay}
+                            style={sliderFill(delay / 6, 0, 1)}
+                            onChange={(e) => updateItem(singleItem.id, { animDelay: Number(e.target.value) })}
+                            onDoubleClick={() => updateItem(singleItem.id, { animDelay: 0 })}
+                          />
+                        </label>
+                      )}
+                    </>
+                  )
+                })()}
+                {singleItem && <EffectsPanel item={singleItem} />}
+                {isImage && singleItem && (
+                  <RemoveBgButton item={singleItem} onResult={(src, name) => updateItem(singleItem.id, { src, name })} />
+                )}
+                {isGif && singleItem && (() => {
+                  const dur = singleItem.gifDuration ?? 5
+                  return (
+                    <label className="slider-field" title="How long this GIF's slide should run when exported as MP4. The GIF loops within that window. Double-click to reset.">
+                      <span className="slider-field__label">
+                        Loop duration<span className="slider-field__value">{dur.toFixed(1)} s</span>
+                      </span>
+                      <input
+                        type="range"
+                        min={1}
+                        max={30}
+                        step={0.5}
+                        value={dur}
+                        style={sliderFill((dur - 1) / 29, 0, 1)}
+                        onChange={(e) => updateItem(singleItem.id, { gifDuration: Number(e.target.value) })}
+                        onDoubleClick={() => updateItem(singleItem.id, { gifDuration: 5 })}
+                      />
+                    </label>
+                  )
+                })()}
                 <button
                   type="button"
                   className="btn btn--ghost btn--danger btn--sm"
@@ -811,12 +3273,123 @@ export default function App() {
                     else if (singleId) removeItem(singleId)
                   }}
                 >
-                  <Icon.Trash style={{ width: 11, height: 11 }} />
-                  {count > 1 ? `Remove ${count} items` : 'Remove media'}
+                  <Icon.Trash style={{ width: 13, height: 13 }} />
+                  {count > 1 ? `Remove ${count} items` : singleRemoveLabel}
                 </button>
               </div>
             )
           })()}
+
+          {/* SLIDE SHEET — properties of the active slide. Click any slide
+              (or its label) on the canvas and this follows. The same
+              actions exist on the canvas labels; a property sheet gives
+              them a stable, discoverable home. */}
+          {activeSlide && (
+            <details className="collapsible" open>
+              <summary>
+                <h2>
+                  <Icon.Slide />
+                  Slide {activeSlideIndex + 1} of {slides.length}
+                </h2>
+              </summary>
+              <div className="collapsible__body">
+                <label className="field">
+                  <span>Name</span>
+                  <input
+                    type="text"
+                    // The store keeps the raw text while typing (trimming per
+                    // keystroke ate the space before the next word); blank /
+                    // whitespace-only clears the name so the "Slide N"
+                    // placeholder shows. Display + export trim; blur tidies
+                    // stray edge spaces out of the saved file.
+                    value={activeSlide.name ?? ''}
+                    placeholder={`Slide ${activeSlideIndex + 1}`}
+                    spellCheck={false}
+                    onChange={(e) => setSlideName(activeSlide.id, e.target.value)}
+                    onBlur={(e) => {
+                      const raw = e.target.value
+                      if (raw !== raw.trim()) setSlideName(activeSlide.id, raw.trim())
+                    }}
+                    title="Slide name — shows on the canvas label and (optionally) in export filenames"
+                  />
+                </label>
+                {/* Just name + export membership: background color lives in
+                    the chip under the artboard and the Background panel,
+                    duplicate/remove on the canvas label and deck — one home
+                    per verb, not three. */}
+                <label className="check" title="Off = this slide is skipped by Export. Also toggleable from the slide's canvas label.">
+                  <input
+                    type="checkbox"
+                    checked={activeSlide.exportEnabled !== false}
+                    onChange={(e) => setSlideExport(activeSlide.id, e.target.checked)}
+                  />
+                  Include in export
+                </label>
+                {(() => {
+                  const secs = activeSlide.duration
+                  return (
+                    <label className="slider-field" title="How long this slide stays on screen when the deck is exported as one video. Auto = its video or GIF length, or long enough to read. Double-click for Auto.">
+                      <span className="slider-field__label">
+                        Time in video<span className="slider-field__value">{secs ? `${secs.toFixed(1)} s` : 'Auto'}</span>
+                      </span>
+                      <input
+                        type="range"
+                        min={1}
+                        max={15}
+                        step={0.5}
+                        value={secs ?? 3}
+                        style={sliderFill(((secs ?? 3) - 1) / 14, 0, 1)}
+                        onChange={(e) => useTiovivoStore.getState().setSlideDuration(activeSlide.id, Number(e.target.value))}
+                        onDoubleClick={() => useTiovivoStore.getState().setSlideDuration(activeSlide.id, null)}
+                      />
+                    </label>
+                  )
+                })()}
+              </div>
+            </details>
+          )}
+
+          {/* SLIDE — background is a property of the slide, so it lives in
+              the inspector (shown whenever it fits under the selection
+              panels; "Sample from Media" still sees the live selection). */}
+          <details className="collapsible" open>
+            <summary><h2><Icon.Palette />Background</h2></summary>
+            <div className="collapsible__body">
+              <BackgroundPanel
+                slides={slides}
+                activeSlideId={activeSlideId}
+                selectedMediaItem={selectedMediaItem}
+                setAllSlidesBgVibe={setAllSlidesBgVibe}
+                setSlideBgVibe={setSlideBgVibe}
+                randomizeAllSlideVibes={randomizeAllSlideVibes}
+                randomizeSlideVibe={randomizeSlideVibe}
+              />
+            </div>
+          </details>
+
+          {/* BRAND — the person's own fonts and colours. Always here, so the
+              inspector has something to offer when nothing is selected. */}
+          <details className="collapsible">
+            <summary><h2><Icon.Sliders />Brand</h2></summary>
+            <div className="collapsible__body">
+              <BrandKitEditor fonts={fontList} onFontsOpen={() => void refreshFonts()} />
+              <button
+                type="button"
+                className="btn btn--sm"
+                style={{ alignSelf: 'flex-start', marginTop: 4 }}
+                onClick={() => {
+                  const { brand, drawnWith, markDrawn } = useBrandStore.getState()
+                  const n = applyBrandToDeck(brand, drawnWith)
+                  markDrawn()
+                  toast(n ? 'Brand applied. Undo brings the old look back.' : 'This deck already matches your brand.', { kind: n ? 'success' : 'info' })
+                }}
+                title="Restyle every slide in your brand: its colours, the heading font on each slide's largest text and the body font on the rest. One undo step."
+              >
+                Apply to this deck
+              </button>
+            </div>
+          </details>
+
         </aside>
 
         <main className="app__main">
@@ -829,6 +3402,64 @@ export default function App() {
             onDragOver={onCanvasDragOver}
             onDrop={onCanvasDrop}
           >
+            {/* Insert tools — a floating glass toolbar on the canvas's left
+                edge (the originally-planned home). The canvas keeps its full
+                width; hidden in preview mode like all editor chrome. */}
+            <input
+              ref={addMediaInputRef}
+              type="file"
+              multiple
+              accept="image/*,video/*"
+              style={{ display: 'none' }}
+              onChange={(e) => {
+                const files = e.target.files
+                onFiles(files)
+                if (e.target) e.target.value = ''
+              }}
+            />
+            {!previewMode && (
+              <div className="canvas-tools">
+                <button
+                  type="button"
+                  className="toolrail__btn"
+                  onClick={() => addMediaInputRef.current?.click()}
+                  title="Add media — images or videos"
+                >
+                  <Icon.Plus />
+                </button>
+                <button
+                  type="button"
+                  className="toolrail__btn"
+                  onClick={onAddText}
+                  title="Add a text layer"
+                >
+                  <Icon.Text />
+                </button>
+                <button
+                  type="button"
+                  className="toolrail__btn"
+                  onClick={() => addShape('rect')}
+                  title="Add a shape — rectangle by default; switch kind in the Shape panel"
+                >
+                  <Icon.Shape />
+                </button>
+                <button
+                  ref={gifPickerAnchorRef}
+                  type="button"
+                  className={`toolrail__btn${gifPickerOpen ? ' toolrail__btn--active' : ''}`}
+                  onClick={() => setGifPickerOpen((v) => !v)}
+                  title="Add a GIF from Giphy"
+                >
+                  <Icon.Gif />
+                </button>
+                <GifPicker
+                  open={gifPickerOpen}
+                  onClose={() => setGifPickerOpen(false)}
+                  onPick={handleGifPick}
+                  anchorRef={gifPickerAnchorRef}
+                />
+              </div>
+            )}
             {isDragOver && (
               <div className="drop-overlay">
                 <div className="drop-overlay__content">
@@ -848,7 +3479,56 @@ export default function App() {
               maxViewHeight={viewport.h}
               onExportSingleSlide={exportSingleSlide}
             />
+
+            {/* Export veil — hides the canvas's necessary-but-jarring
+                visual gymnastics during export (the stage transform is
+                reset to 1:1 origin so toCanvas can grab world-coord
+                pixels; videos seek/draw frame-by-frame as we capture).
+                Konva keeps rendering underneath, the user just doesn't
+                see the camera snap around. */}
+            {exporting && (
+              <div
+                className="app__export-veil"
+                style={{ background: resolveWorkspaceBg(workspaceBgColor, theme) }}
+                aria-hidden
+              >
+                {exportPreview && (
+                  <img
+                    src={exportPreview}
+                    alt=""
+                    className="app__export-veil-img"
+                  />
+                )}
+              </div>
+            )}
+
+            {/* Export status toast — pinned to the top-right of the canvas
+                area so it can grow as long as ffmpeg's progress string
+                wants without disturbing the header layout. */}
+            {exporting && (
+              <div
+                className="app__export-toast"
+                aria-live="polite"
+                title={exportProgress}
+              >
+                <span className="app__export-toast-dot" aria-hidden />
+                <span className="app__export-toast-text">
+                  {exportProgress || 'Working'}
+                  {exportElapsed ? ` · ${exportElapsed}` : ''}
+                  {'.'.repeat(exportPulse)}
+                </span>
+              </div>
+            )}
+
           </div>
+
+          {/* Slide deck — overview rail under the canvas: click selects,
+              double-click centres the canvas on that slide, drag reorders,
+              "+" appends. Hidden in preview mode so the canvas reads as
+              final output. */}
+          {!previewMode && (
+            <SlideStrip onFocusSlide={(id) => stageRef.current?.centerSlide(id)} />
+          )}
         </main>
       </div>
     </div>
