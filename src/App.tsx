@@ -22,7 +22,8 @@ import { removeBackground as runRemoveBackground } from './lib/removeBackground'
 import { useTiovivoStore, type EntranceAnim, type PlacedMedia, type ShapeKind, type TextAlign } from './store/useTiovivoStore'
 import { PRESETS, type PresetId } from './lib/presets'
 import { serializeProject, deserializeProject, hydrateItems } from './lib/projectFile'
-import { generateProjectPreview } from './lib/thumbnail'
+import { generateProjectPreview, generateThumbnail } from './lib/thumbnail'
+import GridPlanner from './grid/GridPlanner'
 import { FALLBACK_FONTS, listSystemFonts } from './lib/fonts'
 import { detectVideoFps, fpsRoughlyEqual, roundToCommonFps } from './lib/detectVideoFps'
 import { videoElements } from './lib/videoRegistry'
@@ -985,6 +986,7 @@ export default function App() {
   // The start screen is the front door: shown at launch and after File → New.
   const [startOpen, setStartOpen] = useState(true)
   const [assistantOpen, setAssistantOpen] = useState(false)
+  const [gridOpen, setGridOpen] = useState(false)
 
   // Header + canvas popovers (Format chip, Export options, View cluster).
   const [formatOpen, setFormatOpen] = useState(false)
@@ -2299,6 +2301,27 @@ export default function App() {
           onFocusSlide={(id) => stageRef.current?.centerSlide(id)}
         />
       )}
+      {gridOpen && (
+        <GridPlanner
+          onClose={() => setGridOpen(false)}
+          getCurrentSlide={async () => {
+            // The active slide as the editor would export it, sized for the
+            // grid (Instagram serves profile covers at ≤1080 wide).
+            const st = useTiovivoStore.getState()
+            const slide = st.slides.find((s) => s.id === st.activeSlideId)
+            if (!slide) return null
+            const slideItems = [
+              ...st.items.filter((it) => it.appearsOnAllSlides && it.slideId !== slide.id),
+              ...st.items.filter((it) => it.slideId === slide.id),
+            ]
+            const url = await generateThumbnail(slideItems, st.dimensions, 1080, 1920, slide)
+            if (!url) return null
+            const blob = await (await fetch(url)).blob()
+            const n = st.slides.indexOf(slide) + 1
+            return { blob, name: `${slide.name || `Slide ${n}`}.png` }
+          }}
+        />
+      )}
       {startOpen && (
         <StartScreen
           fonts={fontList}
@@ -2315,7 +2338,7 @@ export default function App() {
         <button
           type="button"
           className="app__brand"
-          onClick={() => setStartOpen((v) => !v)}
+          onClick={() => { setGridOpen(false); setStartOpen((v) => !v) }}
           title={startOpen ? 'Back to the canvas' : 'Start — new project, templates, recent'}
           aria-label="Start screen"
           aria-pressed={startOpen}
@@ -2468,6 +2491,15 @@ export default function App() {
           </button>
         </div>
         <div className="app__spacer" />
+        <button
+          type="button"
+          className={`btn${gridOpen ? ' btn--seg-active' : ''}`}
+          onClick={() => { setStartOpen(false); setGridOpen((v) => !v) }}
+          title="Try posts in the profile grid before publishing"
+          aria-pressed={gridOpen}
+        >
+          Grid
+        </button>
         <button
           type="button"
           className={`btn${assistantOpen ? ' btn--seg-active' : ''}`}

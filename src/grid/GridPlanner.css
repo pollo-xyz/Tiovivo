@@ -1,0 +1,367 @@
+/* Profile grid planner: an app screen over the editor, in Tiovivo's own
+   system (tokens from index.css, .btn / .app__presets / .slider-field from
+   App.css). The only new colours are the simulated Instagram surfaces and
+   the post mattes: they are content, not chrome, so they stay literal
+   values in this token block. */
+:root {
+  --gp-ig-light-bg: #ffffff;
+  --gp-ig-light-text: #000000;
+  --gp-ig-light-dim: #737373;
+  --gp-ig-light-empty: #efefef;
+  --gp-ig-dark-bg: #000000;
+  --gp-ig-dark-text: #f5f5f5;
+  --gp-ig-dark-dim: #a8a8a8;
+  --gp-ig-dark-empty: #262626;
+  --gp-ig-font: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+}
+
+.gp {
+  position: fixed;
+  inset: 56px 0 0 0;
+  z-index: 25; /* same layer as the start screen */
+  overflow-y: auto;
+  background: var(--bg);
+  background-image: var(--ambient);
+  outline: none;
+  animation: gp-in var(--dur-open, 240ms) var(--ease) both;
+}
+@keyframes gp-in {
+  from { opacity: 0; transform: translateY(6px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .gp { animation: none; }
+}
+.gp--dropping .gp-grid {
+  outline: 2px dashed var(--hot);
+  outline-offset: 6px;
+}
+
+.gp__inner {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  gap: 48px;
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 36px 40px 64px;
+}
+.gp__main,
+.gp__side {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  min-width: 0;
+}
+.gp__side {
+  position: sticky;
+  top: 0;
+  align-self: start;
+  padding-top: 4px;
+}
+.gp__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+.gp__head h1 {
+  margin: 0;
+  font-family: var(--display);
+  font-size: 2.1rem;
+  font-weight: 600;
+  letter-spacing: -0.035em;
+  line-height: 1.05;
+  color: var(--text-bright);
+  overflow-wrap: break-word;
+  min-width: 0;
+}
+.gp__toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.gp__spacer { flex: 1; }
+
+/* The phone: Instagram's own surface, never the app theme. */
+.gp__stage {
+  display: flex;
+  justify-content: center;
+}
+.gp-phone {
+  --gp-bg: var(--gp-ig-light-bg);
+  --gp-text: var(--gp-ig-light-text);
+  --gp-dim: var(--gp-ig-light-dim);
+  --gp-empty: var(--gp-ig-light-empty);
+  width: 100%;
+  border-radius: var(--r-lg);
+  overflow: clip;
+  background: var(--gp-bg);
+  color: var(--gp-text);
+  font-family: var(--gp-ig-font);
+  box-shadow: var(--shadow-lg);
+}
+.gp-phone[data-appearance='dark'] {
+  --gp-bg: var(--gp-ig-dark-bg);
+  --gp-text: var(--gp-ig-dark-text);
+  --gp-dim: var(--gp-ig-dark-dim);
+  --gp-empty: var(--gp-ig-dark-empty);
+}
+.gp__stage--phone .gp-phone { max-width: 390px; }
+.gp__stage--large .gp-phone { max-width: 640px; }
+
+.gp-profile {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 18px 16px 16px;
+  font-size: 14px;
+  line-height: 1.35;
+}
+.gp-profile__top {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+}
+.gp-profile__avatar {
+  flex: none;
+  width: 78px;
+  height: 78px;
+  border-radius: 50%;
+  overflow: clip;
+  background: var(--gp-empty);
+}
+.gp-profile__avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.gp-profile__id {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+.gp-profile__user {
+  font-size: 17px;
+  font-weight: 600;
+  overflow-wrap: break-word;
+  min-width: 0;
+}
+.gp-profile__stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  font-size: 13px;
+}
+.gp-profile__stats b { font-weight: 600; }
+.gp-profile__name { font-weight: 600; margin-top: 6px; }
+.gp-profile__bio {
+  margin: 0;
+  white-space: pre-line;
+  color: var(--gp-text);
+}
+.gp-profile--empty {
+  align-items: flex-start;
+  color: var(--gp-dim);
+}
+.gp-profile--empty p { margin: 0 0 6px; }
+
+/* The grid: three columns, hairline gaps, Instagram's 3:4 (or 1:1) cells. */
+.gp-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 2px;
+}
+.gp__stage--large .gp-grid { gap: 3px; }
+
+.gp-cell {
+  position: relative;
+  aspect-ratio: var(--gp-cell-aspect, 3 / 4);
+  overflow: clip;
+  background: var(--gp-empty);
+  min-width: 0;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+}
+.gp-cell__cover {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  pointer-events: none;
+}
+.gp-cell__img {
+  position: absolute;
+  max-width: none;
+  display: block;
+  pointer-events: none;
+  user-select: none;
+}
+.gp-cell__missing {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font-size: 12px;
+  color: var(--gp-dim);
+}
+.gp-cell--pad { background: transparent; }
+.gp-cell--add {
+  grid-column: 1 / -1;
+  aspect-ratio: auto;
+  min-height: 160px;
+  display: grid;
+  place-items: center;
+  color: var(--gp-dim);
+  cursor: pointer;
+}
+.gp-cell--add:focus-visible { outline: 2px solid var(--hot); outline-offset: -2px; }
+
+.gp-cell--draft {
+  cursor: grab;
+  touch-action: none;
+}
+.gp-cell--draft::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--hot) 55%, transparent);
+  pointer-events: none;
+}
+.gp-cell--selected { cursor: move; }
+.gp-cell--selected::after {
+  box-shadow: inset 0 0 0 3px var(--hot);
+}
+.gp-cell--draft:focus-visible { outline: none; }
+.gp-cell--draft:focus-visible::after {
+  box-shadow: inset 0 0 0 3px var(--hot), inset 0 0 0 5px var(--on-hot);
+}
+.gp-cell__badge {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: var(--r-xs);
+  background: var(--hot);
+  color: var(--on-hot);
+  font-family: var(--font);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 20px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+.gp-cell__pin {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  padding: 2px 6px;
+  border-radius: var(--r-xs);
+  background: color-mix(in srgb, var(--gp-ig-dark-bg) 60%, transparent);
+  color: var(--gp-ig-dark-text);
+  font-size: 11px;
+}
+
+/* Published posts: actions appear on hover or keyboard focus. */
+.gp-cell__actions {
+  position: absolute;
+  inset: auto 0 0 0;
+  display: flex;
+  justify-content: flex-end;
+  gap: 4px;
+  padding: 6px;
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease);
+}
+.gp-cell--live:hover .gp-cell__actions,
+.gp-cell--live:focus-within .gp-cell__actions { opacity: 1; }
+@media (prefers-reduced-motion: reduce) {
+  .gp-cell__actions { transition: none; }
+}
+
+.gp-chip {
+  height: 24px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: var(--r-xs);
+  background: color-mix(in srgb, var(--gp-ig-dark-bg) 66%, transparent);
+  color: var(--gp-ig-dark-text);
+  font: 500 11px/24px var(--font);
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease);
+}
+.gp-chip:hover { background: color-mix(in srgb, var(--gp-ig-dark-bg) 86%, transparent); }
+.gp-chip:active { transform: var(--press); }
+.gp-chip:focus-visible { outline: 2px solid var(--hot); outline-offset: 1px; }
+.gp-chip--solid {
+  background: var(--hot);
+  color: var(--on-hot);
+}
+.gp-chip--solid:hover { background: var(--hot-hi); }
+
+/* Side panel — hairline-ruled sections, the start screen's rhythm. */
+.gp-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-strong);
+}
+.gp-panel__title {
+  margin: 0;
+  font-family: var(--font);
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-bright);
+}
+.gp-panel__meta,
+.gp-panel__hint {
+  margin: 0;
+  font-size: 0.75rem;
+  line-height: 1.45;
+  color: var(--text-dim);
+}
+.gp-panel__meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.gp-panel__path {
+  margin: 0;
+  font-size: 0.72rem;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.gp-panel__row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.gp-panel__field {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 0.78rem;
+  color: var(--text);
+}
+.gp-panel__field > span { flex: 1; }
+.gp-panel .app__presets .btn { flex-direction: row; gap: 6px; }
+.gp-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  box-shadow: inset 0 0 0 1px var(--border-bright);
+}
+
+@media (max-width: 900px) {
+  .gp__inner { grid-template-columns: minmax(0, 1fr); padding: 24px 20px 48px; }
+  .gp__side { position: static; }
+}

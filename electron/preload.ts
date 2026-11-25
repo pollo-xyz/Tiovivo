@@ -220,6 +220,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return () => ipcRenderer.off('app:open-mcp', h)
   },
 
+  /** Profile-grid planner (electron/grid.ts): a snapshot folder written by
+   *  an external exporter, plus an optional refresh script. */
+  gridGetConfig: () => ipcRenderer.invoke('grid-get-config'),
+  gridPickSnapshotDir: () => ipcRenderer.invoke('grid-pick-snapshot-dir'),
+  gridLoadSnapshot: () => ipcRenderer.invoke('grid-load-snapshot'),
+  gridPickRefreshScript: () => ipcRenderer.invoke('grid-pick-refresh-script'),
+  gridClearRefreshScript: () => ipcRenderer.invoke('grid-clear-refresh-script'),
+  gridRunRefresh: () => ipcRenderer.invoke('grid-run-refresh'),
+
   /** Park slide bytes in a temp file so a native drag-out can hand them off
    *  to Finder/Explorer/Slack/etc. Returns the absolute temp path. */
   prepareSlideDrag: (options: {

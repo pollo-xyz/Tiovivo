@@ -6,6 +6,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { createRequire } from 'node:module'
 import { initMcp } from './mcp'
 import { initAi } from './ai'
+import { initGrid } from './grid'
 
 const require = createRequire(import.meta.url)
 const __filename = fileURLToPath(import.meta.url)
@@ -903,6 +904,7 @@ if (gotLock) app.whenReady().then(() => {
   })
   // In-app assistant: Claude on the same document tools, key kept in main.
   initAi({ getWindow: () => win, runTool: mcp.runTool })
+  initGrid()
 })
 
 /* ------------------------------------------------------------------ */

@@ -26,6 +26,18 @@ export interface McpCall {
   mutates: boolean
 }
 
+export interface GridConfig {
+  snapshotDir: string | null
+  refreshScript: string | null
+}
+
+export interface GridSnapshotPayload {
+  dir: string
+  json: string
+  files: Record<string, Uint8Array>
+  missing: number
+}
+
 export interface ElectronAPI {
   saveFile: (options: {
     defaultName: string
@@ -135,6 +147,14 @@ export interface ElectronAPI {
   onMcpCall: (cb: (call: McpCall) => void) => () => void
   sendMcpResult: (msg: { id: string; ok: boolean; result?: unknown; error?: string }) => void
   onOpenMcp: (cb: () => void) => () => void
+
+  /** Profile-grid planner snapshot + refresh (electron/grid.ts). */
+  gridGetConfig?: () => Promise<GridConfig>
+  gridPickSnapshotDir?: () => Promise<GridConfig | null>
+  gridLoadSnapshot?: () => Promise<GridSnapshotPayload | null>
+  gridPickRefreshScript?: () => Promise<GridConfig | null>
+  gridClearRefreshScript?: () => Promise<GridConfig>
+  gridRunRefresh?: () => Promise<{ ok: boolean; output: string }>
 
   /** Park slide PNG/MP4 bytes in a temp file ahead of an OS drag. */
   prepareSlideDrag: (options: {
